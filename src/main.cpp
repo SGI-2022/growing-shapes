@@ -19,14 +19,67 @@
 #include <iostream>
 #include <unordered_set>
 #include <utility>
-
+#include <unsupported/Eigen/MatrixFunctions>
+#include<Eigen/SparseCholesky>
 
 // The mesh, Eigen representation
 Eigen::MatrixXd meshV;
 Eigen::MatrixXi meshF;
 
+float t=0.01;
+int iter = 0;
+
 // Options for algorithms
 int iVertexSource = 7;
+
+void addLaplacianExplicit() {
+    using namespace Eigen;
+
+    SparseMatrix<double> L;
+    igl::cotmatrix(meshV,meshF,L);
+
+    VectorXd K;
+    igl::gaussian_curvature(meshV, meshF, K);
+
+    for (int i=0;i<iter;i++){
+    K = (K+t*L * K).eval();
+    }
+
+    polyscope::getSurfaceMesh("input mesh")
+            ->addVertexScalarQuantity("laplacian explicit", K);
+    //scalarQ->setMapRange({-1.,1.});
+}
+
+void addLaplacianImplicit(){
+    using namespace Eigen;
+
+    SparseMatrix<double> L;
+    igl::cotmatrix(meshV,meshF,L);
+
+    VectorXd K;
+    igl::gaussian_curvature(meshV, meshF, K);
+
+    int size = meshV.rows();
+    SparseMatrix<double> Y(size,size);
+    for(int i=0;i<size;i++){
+       Y.coeffRef(i,i)=1;
+    }
+
+    Y = (Y - t*L).eval();
+
+    SimplicialLDLT<SparseMatrix<double>> solver;
+    solver.compute(Y);
+    for (int i=0;i<iter;i++){
+    K= solver.solve(K);
+    }
+
+    polyscope::getSurfaceMesh("input mesh")
+        ->addVertexScalarQuantity("laplacian implicit", K);
+
+    //auto pmesh = polyscope::getSurfaceMesh("input mesh");
+    //auto scalarQ = pmesh->addVertexScalarQuantity("laplacian explicit", K);
+    //scalarQ->setMapRange({-1.,1.});
+}
 
 void addCurvatureScalar() {
   using namespace Eigen;
@@ -100,6 +153,12 @@ void callback() {
 
   ImGui::PushItemWidth(100);
 
+  ImGui::InputFloat("t", &t);
+  ImGui::SameLine();
+  ImGui::SliderInt("Offset", &iter, 0, 10000);
+  addLaplacianExplicit();
+  addLaplacianImplicit();
+
   // Curvature
   if (ImGui::Button("add curvature")) {
     addCurvatureScalar();
@@ -140,6 +199,7 @@ int main(int argc, char **argv) {
 
   // Read the mesh
   igl::readOBJ(filename, meshV, meshF);
+  //t = 0.01;
 
   // Register the mesh with Polyscope
   polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
