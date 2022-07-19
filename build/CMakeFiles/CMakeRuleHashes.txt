@@ -1,2 +1,0 @@
-# Hashes of file build rules.
-ec51e020108512ee5fdae7b26dbba1cb polyscope/deps/glfw/src/CMakeFiles/update_mappings
