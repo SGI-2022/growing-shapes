@@ -93,6 +93,22 @@ void computeNormals() {
       ->addVertexVectorQuantity("libIGL vertex normals", N_vertices);
 }
 
+void computeLaplacian(float t) {
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
+
+    Eigen::VectorXd k;
+    igl::gaussian_curvature(meshV, meshF, k);
+
+    for (int i = 0; i < t; i++) {
+        k = k + t * L * k;
+    }
+
+    polyscope::getSurfaceMesh("input mesh")
+        ->addVertexScalarQuantity("Laplacian", k);
+    
+}
+
 void callback() {
 
   static int numPoints = 2000;
@@ -122,7 +138,18 @@ void callback() {
   ImGui::SameLine();
   ImGui::InputInt("source vertex", &iVertexSource);
 
-  ImGui::PopItemWidth();
+
+  // Laplacian slider
+  static int max = 1;
+  ImGui::InputInt("max time", &max);
+  static float t = 0;
+ 
+  ImGui::SameLine();
+  if (ImGui::SliderFloat("Laplacian Time", &t, 0, max)) {
+      computeLaplacian(t);
+  }
+
+  ImGui::PopItemWidth();   
 }
 
 int main(int argc, char **argv) {
