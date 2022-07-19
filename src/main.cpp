@@ -20,6 +20,9 @@
 #include <unordered_set>
 #include <utility>
 
+float timeStep1 = 0.05;
+float max1 = 200;
+float numSteps1 = 0;
 
 // The mesh, Eigen representation
 Eigen::MatrixXd meshV;
@@ -93,20 +96,51 @@ void computeNormals() {
       ->addVertexVectorQuantity("libIGL vertex normals", N_vertices);
 }
 
-void computeLaplacian(float t) {
+void computeExplicitHeat(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L);
 
     Eigen::VectorXd k;
     igl::gaussian_curvature(meshV, meshF, k);
 
-    for (int i = 0; i < t; i++) {
-        k = k + t * L * k;
+    for (int i = 0; i < numSteps; i++) {
+        k = k + timeStep * L * k;
     }
 
-    polyscope::getSurfaceMesh("input mesh")
-        ->addVertexScalarQuantity("Laplacian", k);
-    
+    auto temp = polyscope::getSurfaceMesh("input mesh");
+    auto mesh = temp->addVertexScalarQuantity("explicit heat", k);
+    mesh->setMapRange({ -0.1,0.1 });
+}
+
+void computeImplicitHeat(float numSteps, float timeStep) {
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
+
+    Eigen::VectorXd k;
+    igl::gaussian_curvature(meshV, meshF, k);
+
+    Eigen::SparseMatrix<double> I(L.rows(), L.rows());
+    I.setIdentity();
+
+    // first method
+    Eigen::SparseMatrix<double> temp = (I - timeStep * L);
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
+    solver.compute(temp);
+    //Eigen::MatrixXd temp_inv = temp.inverse();
+    for (int i = 0; i < numSteps; i++) {
+        //k = temp_inv * k;
+        k = solver.solve(k);
+    }
+
+    //// second method
+    //Eigen::EigenSolver<Eigen::MatrixXd> es(temp);
+    //auto eigenVecs = es.eigenvectors();
+    //auto eigenVals = es.eigenvalues();
+    //k = 1 / ((eigenVals.col(0)[1]) ^ int(numSteps)) * k;
+
+    auto temp2 = polyscope::getSurfaceMesh("input mesh");
+    auto mesh = temp2->addVertexScalarQuantity("implicit heat", k);
+    mesh->setMapRange({ -0.1,0.1 });
 }
 
 void callback() {
@@ -138,18 +172,48 @@ void callback() {
   ImGui::SameLine();
   ImGui::InputInt("source vertex", &iVertexSource);
 
-
-  // Laplacian slider
-  static int max = 1;
-  ImGui::InputInt("max time", &max);
-  static float t = 0;
+  ImGui::PopItemWidth();
  
-  ImGui::SameLine();
-  if (ImGui::SliderFloat("Laplacian Time", &t, 0, max)) {
-      computeLaplacian(t);
-  }
+  // Explicit Heat Equation
+  ImGui::Button("Explicit Heat Equation");
 
-  ImGui::PopItemWidth();   
+  //ImGui::PushItemWidth(50);
+  ImGui::InputFloat("Time Step###explicit", &timeStep1);
+  //ImGui::PopItemWidth();
+
+  //ImGui::SameLine();
+  //ImGui::PushItemWidth(75);
+  ImGui::InputFloat("Max###explicit", &max1);
+  //ImGui::PopItemWidth();
+  
+  //ImGui::SameLine();
+  //ImGui::PushItemWidth(150);
+  //if (ImGui::SliderFloat("Num Steps###explicit", &numSteps1, 0, max1)) {
+  //    computeExplicitHeat(numSteps1, timeStep1);
+  //}
+  //ImGui::PopItemWidth();
+
+  //// Semi-implicit Heat Equation
+  //ImGui::Button("Semi-implicit Heat Equation");
+
+  //static float timeStep2 = 0.05;
+  //ImGui::PushItemWidth(50);
+  //ImGui::InputFloat("Time Step###implicit", &timeStep2);
+  //ImGui::PopItemWidth();
+
+  //static float max2 = 200;
+  //ImGui::SameLine();
+  //ImGui::PushItemWidth(75);
+  //ImGui::InputFloat("Max###implicit", &max2);
+  //ImGui::PopItemWidth();
+
+  //static float numSteps2 = 0;
+  //ImGui::SameLine();
+  //ImGui::PushItemWidth(150);
+  //if (ImGui::SliderFloat("Num Steps###implicit", &numSteps2, 0, max2)) {
+  //    computeImplicitHeat(numSteps2, timeStep2);
+  //}
+  //ImGui::PopItemWidth();
 }
 
 int main(int argc, char **argv) {
