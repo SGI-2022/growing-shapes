@@ -145,33 +145,27 @@ void computeReactionDiffusion(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L); 
 
+    //Eigen::VectorXd a;
+    //igl::gaussian_curvature(meshV, meshF, a);
+    //Eigen::VectorXd b;
+    //igl::gaussian_curvature(meshV, meshF, b);
+
     Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
     Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
 
-    //for (int i = 0; i < L.rows(); i++) {
-    //    if (i % 2 == 0) {
-    //        a(i) = 1.0;
-    //        b(i) = 1.0;
-    //    }
-    //    else {
-    //        a(i) = 3.0;
-    //        b(i) = 3.0;
-    //    }
-    //}
-
     Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12);  // decay rate of a
     Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16); // growing rate of b
-    float da = 1; // diffusion rate
-    float db = 1/2; // diffusion rate
-    float s = 1/5; // reaction rate
+    float da = (float)1/16; // diffusion rate
+    float db = (float)1/4; // diffusion rate
+    float s = (float)1/128; // reaction rate
 
     Eigen::VectorXd noise_a(L.rows());
     noise_a.setRandom();
-    noise_a = noise_a * 1 / 1000;
+    //noise_a = noise_a / 100;
 
     Eigen::VectorXd noise_b(L.rows());
     noise_b.setRandom();
-    noise_b = noise_b * 1 / 1000;
+    //noise_b = noise_b / 100;
 
     alpha = alpha + noise_a;
     beta = beta + noise_b;
@@ -179,12 +173,12 @@ void computeReactionDiffusion(float numSteps, float timeStep) {
     // Turing
     for (int i = 0; i < numSteps; i++) {
         a = (a + s * timeStep * (a * b - a - alpha) + da * timeStep * L * a).eval();
-        b = (b + s * timeStep * (s * (beta - a * b)) + db * timeStep * L * b).eval();
+        b = (b + s * timeStep * (beta - a * b) + db * timeStep * L * b).eval();
     }
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
     auto mesh = temp->addVertexScalarQuantity("Reaction Diffusion", a);
-    mesh->setMapRange({ -0.1,0.1 });
+    //mesh->setMapRange({ -0.1,0.1 });
 }
 
 void callback() {
@@ -265,7 +259,7 @@ void callback() {
   // Reaction Diffusion
   ImGui::Button("Turing Reaction Diffusion");
 
-  static float timeStep3 = 0.05;
+  static float timeStep3 = 0.5;
   ImGui::PushItemWidth(50);
   ImGui::InputFloat("Time Step##rd", &timeStep3);
   ImGui::PopItemWidth();
