@@ -19,10 +19,8 @@
 #include <iostream>
 #include <unordered_set>
 #include <utility>
+using namespace std;
 
-float timeStep1 = 0.05;
-float max1 = 200;
-float numSteps1 = 0;
 
 // The mesh, Eigen representation
 Eigen::MatrixXd meshV;
@@ -104,7 +102,7 @@ void computeExplicitHeat(float numSteps, float timeStep) {
     igl::gaussian_curvature(meshV, meshF, k);
 
     for (int i = 0; i < numSteps; i++) {
-        k = k + timeStep * L * k;
+        k = (k + timeStep * L * k).eval();
     }
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
@@ -123,7 +121,7 @@ void computeImplicitHeat(float numSteps, float timeStep) {
     I.setIdentity();
 
     // first method
-    Eigen::SparseMatrix<double> temp = (I - timeStep * L);
+    Eigen::SparseMatrix<double> temp = (I - timeStep * L).eval();
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
     solver.compute(temp);
     //Eigen::MatrixXd temp_inv = temp.inverse();
@@ -140,6 +138,30 @@ void computeImplicitHeat(float numSteps, float timeStep) {
 
     auto temp2 = polyscope::getSurfaceMesh("input mesh");
     auto mesh = temp2->addVertexScalarQuantity("implicit heat", k);
+    mesh->setMapRange({ -0.1,0.1 });
+}
+
+void computeReactionDiffusion(float numSteps, float timeStep) {
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L); 
+
+    Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 0);
+    Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 0);
+
+    Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12);  // decay rate of a
+    Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16); // growing rate of b
+    float da = 1/16; // diffusion rate
+    float db = 1/4; // diffusion rate
+    float s = 1/28; // reaction rate
+ 
+    // Turing
+    for (int i = 0; i < numSteps; i++) {
+        a = (a + s * (a * b - a - alpha) + da * timeStep * L * a).eval();
+        b = (b + s * (s * (beta - a * b)) + db * timeStep * L * b).eval();
+    }
+
+    auto temp = polyscope::getSurfaceMesh("input mesh");
+    auto mesh = temp->addVertexScalarQuantity("Reaction Diffusion", a);
     mesh->setMapRange({ -0.1,0.1 });
 }
 
@@ -177,43 +199,69 @@ void callback() {
   // Explicit Heat Equation
   ImGui::Button("Explicit Heat Equation");
 
-  //ImGui::PushItemWidth(50);
-  ImGui::InputFloat("Time Step###explicit", &timeStep1);
-  //ImGui::PopItemWidth();
+  static float timeStep1 = 0.05;
+  ImGui::PushItemWidth(50);
+  ImGui::InputFloat("Time Step##explicit", &timeStep1);
+  ImGui::PopItemWidth();
 
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(75);
-  ImGui::InputFloat("Max###explicit", &max1);
-  //ImGui::PopItemWidth();
+  static float max1 = 200;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(75);
+  ImGui::InputFloat("Max##explicit", &max1);
+  ImGui::PopItemWidth();
   
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(150);
-  //if (ImGui::SliderFloat("Num Steps###explicit", &numSteps1, 0, max1)) {
-  //    computeExplicitHeat(numSteps1, timeStep1);
-  //}
-  //ImGui::PopItemWidth();
+  static float numSteps1 = 0;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(150);
+  if (ImGui::SliderFloat("Num Steps##explicit", &numSteps1, 0, max1)) {
+      computeExplicitHeat(numSteps1, timeStep1);
+  }
+  ImGui::PopItemWidth();
 
-  //// Semi-implicit Heat Equation
-  //ImGui::Button("Semi-implicit Heat Equation");
+  // Semi-implicit Heat Equation
+  ImGui::Button("Semi-implicit Heat Equation");
 
-  //static float timeStep2 = 0.05;
-  //ImGui::PushItemWidth(50);
-  //ImGui::InputFloat("Time Step###implicit", &timeStep2);
-  //ImGui::PopItemWidth();
+  static float timeStep2 = 0.05;
+  ImGui::PushItemWidth(50);
+  ImGui::InputFloat("Time Step##implicit", &timeStep2);
+  ImGui::PopItemWidth();
 
-  //static float max2 = 200;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(75);
-  //ImGui::InputFloat("Max###implicit", &max2);
-  //ImGui::PopItemWidth();
+  static float max2 = 200;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(75);
+  ImGui::InputFloat("Max##implicit", &max2);
+  ImGui::PopItemWidth();
 
-  //static float numSteps2 = 0;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(150);
-  //if (ImGui::SliderFloat("Num Steps###implicit", &numSteps2, 0, max2)) {
-  //    computeImplicitHeat(numSteps2, timeStep2);
-  //}
-  //ImGui::PopItemWidth();
+  static float numSteps2 = 0;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(150);
+  if (ImGui::SliderFloat("Num Steps##implicit", &numSteps2, 0, max2)) {
+      computeImplicitHeat(numSteps2, timeStep2);
+  }
+  ImGui::PopItemWidth();
+
+  // Reaction Diffusion
+  ImGui::Button("Turing Reaction Diffusion");
+
+  static float timeStep3 = 0.05;
+  ImGui::PushItemWidth(50);
+  ImGui::InputFloat("Time Step##rd", &timeStep3);
+  ImGui::PopItemWidth();
+
+  static float max3 = 200;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(75);
+  ImGui::InputFloat("Max##rd", &max3);
+  ImGui::PopItemWidth();
+
+  static float numSteps3 = 0;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(150);
+  if (ImGui::SliderFloat("Num Steps##rd", &numSteps3, 0, max3)) {
+      computeReactionDiffusion(numSteps3, timeStep3);
+  }
+  ImGui::PopItemWidth();
+
 }
 
 int main(int argc, char **argv) {
