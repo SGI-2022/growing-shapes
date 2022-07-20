@@ -145,19 +145,41 @@ void computeReactionDiffusion(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L); 
 
-    Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 0);
-    Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 0);
+    Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+    Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+
+    //for (int i = 0; i < L.rows(); i++) {
+    //    if (i % 2 == 0) {
+    //        a(i) = 1.0;
+    //        b(i) = 1.0;
+    //    }
+    //    else {
+    //        a(i) = 3.0;
+    //        b(i) = 3.0;
+    //    }
+    //}
 
     Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12);  // decay rate of a
     Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16); // growing rate of b
-    float da = 1/16; // diffusion rate
-    float db = 1/4; // diffusion rate
-    float s = 1/28; // reaction rate
+    float da = 1; // diffusion rate
+    float db = 1/2; // diffusion rate
+    float s = 1/5; // reaction rate
+
+    Eigen::VectorXd noise_a(L.rows());
+    noise_a.setRandom();
+    noise_a = noise_a * 1 / 1000;
+
+    Eigen::VectorXd noise_b(L.rows());
+    noise_b.setRandom();
+    noise_b = noise_b * 1 / 1000;
+
+    alpha = alpha + noise_a;
+    beta = beta + noise_b;
  
     // Turing
     for (int i = 0; i < numSteps; i++) {
-        a = (a + s * (a * b - a - alpha) + da * timeStep * L * a).eval();
-        b = (b + s * (s * (beta - a * b)) + db * timeStep * L * b).eval();
+        a = (a + s * timeStep * (a * b - a - alpha) + da * timeStep * L * a).eval();
+        b = (b + s * timeStep * (s * (beta - a * b)) + db * timeStep * L * b).eval();
     }
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
