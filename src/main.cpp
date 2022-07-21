@@ -217,8 +217,8 @@ void computeImplicitReactionDiffusionTuring(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L);
 
-    Eigen::VectorXd _a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
-    Eigen::VectorXd _b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+    Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+    Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
 
     Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12) + noise_a;  // decay rate of a
     Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16) + noise_b; // growing rate of b
@@ -233,17 +233,16 @@ void computeImplicitReactionDiffusionTuring(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> I(L.rows(), L.rows());
     I.setIdentity();
 
-    Eigen::SparseMatrix<double> a(L.rows(), L.rows());
-    Eigen::SparseMatrix<double> b(L.rows(), L.rows());
-
-    for (int i = 0; i < L.rows(); i++) {
-        a.coeffRef(i, i) = 4.0;
-        b.coeffRef(i, i) = 4.0;
-    }
+    Eigen::SparseMatrix<double> a_diag(L.rows(), L.rows());
+    Eigen::SparseMatrix<double> b_diag(L.rows(), L.rows());
 
     for (int i = 0; i < numSteps; i++) {
-        Eigen::SparseMatrix<double> temp1 = (I - timeStep * da * L + timeStep * s * I - timeStep * s * b).eval();
-        Eigen::SparseMatrix<double> temp2 = (I - timeStep * db * L + timeStep * s * a).eval();
+        for (int i = 0; i < L.rows(); i++) {
+            a_diag.coeffRef(i, i) = a(i, 1);
+            b_diag.coeffRef(i, i) = b(i, 1);
+        }
+        Eigen::SparseMatrix<double> temp1 = (I - timeStep * da * L + timeStep * s * I - timeStep * s * b_diag).eval();
+        Eigen::SparseMatrix<double> temp2 = (I - timeStep * db * L + timeStep * s * a_diag).eval();
 
         // do I need two solvers??
         Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1;
