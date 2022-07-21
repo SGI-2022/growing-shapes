@@ -217,34 +217,42 @@ void computeImplicitReactionDiffusionTuring(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L);
 
-    Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
-    Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+    Eigen::VectorXd _a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+    Eigen::VectorXd _b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
 
-    Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12);  // decay rate of a
-    Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16); // growing rate of b
+    Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12) + noise_a;  // decay rate of a
+    Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16) + noise_b; // growing rate of b
     float da = (float)1 / 16; // diffusion rate
     float db = (float)1 / 4; // diffusion rate
     float s = (float)1 / 128; // reaction rate
 
-    /*alpha = alpha + noise_a;
-    beta = beta + noise_b;*/
+    //alpha = alpha + noise_a;
+    //beta = beta + noise_b;
 
     // Turing
     Eigen::SparseMatrix<double> I(L.rows(), L.rows());
     I.setIdentity();
 
-    Eigen::SparseMatrix<double> temp1 = (I - timeStep * da * L + timeStep * s * I - timeStep * s * b).eval();
-    Eigen::SparseMatrix<double> temp2 = (I - timeStep * db * L + timeStep * s * I - timeStep * s * a).eval();
+    Eigen::SparseMatrix<double> a(L.rows(), L.rows());
+    Eigen::SparseMatrix<double> b(L.rows(), L.rows());
 
-    // do I need two solvers??
-    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1; 
-    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver2;
-    solver1.compute(temp1);
-    solver2.compute(temp2);
+    for (int i = 0; i < L.rows(); i++) {
+        a.coeffRef(i, i) = 4.0;
+        b.coeffRef(i, i) = 4.0;
+    }
 
     for (int i = 0; i < numSteps; i++) {
+        Eigen::SparseMatrix<double> temp1 = (I - timeStep * da * L + timeStep * s * I - timeStep * s * b).eval();
+        Eigen::SparseMatrix<double> temp2 = (I - timeStep * db * L + timeStep * s * a).eval();
+
+        // do I need two solvers??
+        Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1;
+        Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver2;
+        solver1.compute(temp1);
+        solver2.compute(temp2);
+
         a = solver1.solve(a - timeStep * s * alpha);
-        b = solver2.solve(b - timeStep * s * beta);
+        b = solver2.solve(b + timeStep * s * beta);
     }
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
