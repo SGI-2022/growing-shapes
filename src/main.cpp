@@ -26,6 +26,9 @@ using namespace std;
 Eigen::MatrixXd meshV;
 Eigen::MatrixXi meshF;
 
+Eigen::VectorXd noise_a;
+Eigen::VectorXd noise_b;
+
 // Options for algorithms
 int iVertexSource = 7;
 
@@ -141,7 +144,7 @@ void computeImplicitHeat(float numSteps, float timeStep) {
     mesh->setMapRange({ -0.1,0.1 });
 }
 
-void computeReactionDiffusion(float numSteps, float timeStep) {
+void computeExplicitReactionDiffusionTuring(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L); 
 
@@ -159,26 +162,85 @@ void computeReactionDiffusion(float numSteps, float timeStep) {
     float db = (float)1/4; // diffusion rate
     float s = (float)1/128; // reaction rate
 
-    Eigen::VectorXd noise_a(L.rows());
-    noise_a.setRandom();
-    //noise_a = noise_a / 100;
-
-    Eigen::VectorXd noise_b(L.rows());
-    noise_b.setRandom();
-    //noise_b = noise_b / 100;
-
     alpha = alpha + noise_a;
     beta = beta + noise_b;
  
     // Turing
     for (int i = 0; i < numSteps; i++) {
-        a = (a + s * timeStep * (a * b - a - alpha) + da * timeStep * L * a).eval();
-        b = (b + s * timeStep * (beta - a * b) + db * timeStep * L * b).eval();
+        Eigen::VectorXd ab = a.array() * b.array();
+        a = (a + s * timeStep * (ab - a - alpha) + da * timeStep * L * a).eval();
+        ab = a.array() * b.array();
+        b = (b + s * timeStep * (beta - ab) + db * timeStep * L * b).eval();
     }
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
-    auto mesh = temp->addVertexScalarQuantity("Reaction Diffusion", a);
+    auto mesh = temp->addVertexScalarQuantity("Turing Explicit", a);
     //mesh->setMapRange({ -0.1,0.1 });
+}
+
+void computeExplicitReactionDiffusionScott(float numSteps, float timeStep) {
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
+
+    //Eigen::VectorXd a;
+    //igl::gaussian_curvature(meshV, meshF, a);
+    //Eigen::VectorXd b;
+    //igl::gaussian_curvature(meshV, meshF, b);
+
+    Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+    Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+
+    Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, 12);  // feed rate
+    Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, 16); // degrading rate
+
+    float da = (float)1 / 16; // diffusion rate
+    float db = (float)1 / 4; // diffusion rate
+    float s = (float)1 / 128; // reaction rate
+
+    F = F + noise_a;
+    k = k + noise_b;
+
+    // Turing
+    for (int i = 0; i < numSteps; i++) {
+        Eigen::VectorXd aab = a.array() * a.array() * b.array();
+        a = (a + s * timeStep * (aab - a * (F + k)) + da * timeStep * L * a).eval();
+        aab = a.array() * a.array() * b.array();
+        b = (b + s * timeStep * (-1 * aab + F - F * b) + db * timeStep * L * b).eval();
+    }
+
+    auto temp = polyscope::getSurfaceMesh("input mesh");
+    auto mesh = temp->addVertexScalarQuantity("Gray & Scott Explicit", a);
+    //mesh->setMapRange({ -0.1,0.1 });
+}
+
+void computeImplicitReactionDiffusion(float numSteps, float timeStep) {
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
+
+    Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+    Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
+
+    Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12);  // decay rate of a
+    Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16); // growing rate of b
+    float da = (float)1 / 16; // diffusion rate
+    float db = (float)1 / 4; // diffusion rate
+    float s = (float)1 / 128; // reaction rate
+
+    alpha = alpha + noise_a;
+    beta = beta + noise_b;
+
+    // Turing
+    for (int i = 0; i < numSteps; i++) {
+        Eigen::VectorXd ab = a.array() * b.array(); 
+        Eigen::VectorXd I(a.rows(), 1);
+        I.setIdentity();
+        a = (a - timeStep * s * alpha) / (I - timeStep * da * L + timeStep * s * I - timeStep * s * b);
+        ab = a.array() * b.array();
+        b = (b - timeStep * s * beta) / (I - timeStep * db * L + timeStep * s * I - timeStep * s * a);
+    }
+
+    auto temp = polyscope::getSurfaceMesh("input mesh");
+    auto mesh = temp->addVertexScalarQuantity("Turing Explicit", a);
 }
 
 void callback() {
@@ -186,31 +248,31 @@ void callback() {
   static int numPoints = 2000;
   static float param = 3.14;
 
-  ImGui::PushItemWidth(100);
+  //ImGui::PushItemWidth(100);
 
-  // Curvature
-  if (ImGui::Button("add curvature")) {
-    addCurvatureScalar();
-  }
-  
-  // Normals 
-  if (ImGui::Button("add normals")) {
-    computeNormals();
-  }
+  //// Curvature
+  //if (ImGui::Button("add curvature")) {
+  //  addCurvatureScalar();
+  //}
+  //
+  //// Normals 
+  //if (ImGui::Button("add normals")) {
+  //  computeNormals();
+  //}
 
-  // Param
-  if (ImGui::Button("add parameterization")) {
-    computeParameterization();
-  }
+  //// Param
+  //if (ImGui::Button("add parameterization")) {
+  //  computeParameterization();
+  //}
 
-  // Geodesics
-  if (ImGui::Button("compute distance")) {
-    computeDistanceFrom();
-  }
-  ImGui::SameLine();
-  ImGui::InputInt("source vertex", &iVertexSource);
+  //// Geodesics
+  //if (ImGui::Button("compute distance")) {
+  //  computeDistanceFrom();
+  //}
+  //ImGui::SameLine();
+  //ImGui::InputInt("source vertex", &iVertexSource);
 
-  ImGui::PopItemWidth();
+  //ImGui::PopItemWidth();
  
   // Explicit Heat Equation
   ImGui::Button("Explicit Heat Equation");
@@ -256,32 +318,53 @@ void callback() {
   }
   ImGui::PopItemWidth();
 
-  // Reaction Diffusion
+  // Reaction Diffusion Turing
   ImGui::Button("Turing Reaction Diffusion");
 
-  static float timeStep3 = 0.5;
+  static float timeStep3 = 0.05;
   ImGui::PushItemWidth(50);
-  ImGui::InputFloat("Time Step##rd", &timeStep3);
+  ImGui::InputFloat("Time Step##Turing", &timeStep3);
   ImGui::PopItemWidth();
 
   static float max3 = 200;
   ImGui::SameLine();
   ImGui::PushItemWidth(75);
-  ImGui::InputFloat("Max##rd", &max3);
+  ImGui::InputFloat("Max##Turing", &max3);
   ImGui::PopItemWidth();
 
   static float numSteps3 = 0;
   ImGui::SameLine();
   ImGui::PushItemWidth(150);
-  if (ImGui::SliderFloat("Num Steps##rd", &numSteps3, 0, max3)) {
-      computeReactionDiffusion(numSteps3, timeStep3);
+  if (ImGui::SliderFloat("Num Steps##Turing", &numSteps3, 0, max3)) {
+      computeExplicitReactionDiffusionTuring(numSteps3, timeStep3);
+  }
+  ImGui::PopItemWidth();
+
+  // Reaction Diffusion Gray and Scott
+  ImGui::Button("Gray & Scott Reaction Diffusion");
+
+  static float timeStep4 = 0.05;
+  ImGui::PushItemWidth(50);
+  ImGui::InputFloat("Time Step##Scott", &timeStep4);
+  ImGui::PopItemWidth();
+
+  static float max4 = 200;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(75);
+  ImGui::InputFloat("Max##Scott", &max4);
+  ImGui::PopItemWidth();
+
+  static float numSteps4 = 0;
+  ImGui::SameLine();
+  ImGui::PushItemWidth(150);
+  if (ImGui::SliderFloat("Num Steps##Scott", &numSteps4, 0, max4)) {
+      computeExplicitReactionDiffusionScott(numSteps4, timeStep4);
   }
   ImGui::PopItemWidth();
 
 }
 
 int main(int argc, char **argv) {
-
   // Options
   polyscope::options::autocenterStructures = true;
   polyscope::view::windowWidth = 1024;
@@ -295,6 +378,14 @@ int main(int argc, char **argv) {
 
   // Read the mesh
   igl::readOBJ(filename, meshV, meshF);
+
+  Eigen::VectorXd noise(meshV.rows());
+  noise.setRandom();
+  noise_a = noise;
+
+  Eigen::VectorXd noise2(meshV.rows());
+  noise2.setRandom();
+  noise_b = noise2;
 
   // Register the mesh with Polyscope
   polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
