@@ -31,13 +31,13 @@ Eigen::MatrixXi meshF;
 Eigen::MatrixXd res;
 Eigen::VectorXd rd;
 
-float t=0.05;
+float t=0.1;
 int iter = 0;
-float s=(float)0;
-float al = 0;
-float be=0;
-float da=0;
-float db=0;
+float s=(float)0.007812;
+float al = 12;
+float be=16;
+float da=0.00005;
+float db=0.0002;
 
 // Options for algorithms
 int iVertexSource = 7;
@@ -362,17 +362,17 @@ void reactiondiffusionimplicit(){
   using namespace Eigen;
   SparseMatrix<double> L, M, Minv;
   igl::massmatrix(meshV,meshF,igl::MASSMATRIX_TYPE_VORONOI,M);
-  igl::invert_diag(M,Minv);
+  //igl::invert_diag(M,Minv);
   igl::cotmatrix(meshV,meshF,L);
   //L=Minv*L;
 
   int r = meshV.rows();
   VectorXd A(r), A_old(r), B(r), B_old(r), C(r), beta(r), alpha(r); 
-  beta = VectorXd::Constant(r,1,al)+rd;
-  alpha = VectorXd::Constant(r,1,be)+rd; 
+  alpha = VectorXd::Constant(r,1,al)+al*0.001*rd;
+  beta = VectorXd::Constant(r,1,be)+be*0.001*rd;
   for(int i=0;i<r;i++){
-      A(i) = 1 + rd(i);
-      B(i) = 1 + rd(i);;
+      A(i) = 4.0;
+      B(i) = 4.0;
 
       C(i)=1;
   }
@@ -381,22 +381,23 @@ void reactiondiffusionimplicit(){
   Y2.setIdentity();
   SimplicialLDLT<SparseMatrix<double>> solver1;
   SimplicialLDLT<SparseMatrix<double>> solver2;
-  Y1 = (Y1 - da*t*L).eval();
-  Y2 = (Y2 - db*t*L).eval();
+  //da=0.00005;
+  //db=0.0002;
+  Y1 = (M - da*t*L).eval();
+  Y2 = (M - db*t*L).eval();
   solver1.compute(Y1);
   solver2.compute(Y2);
 
   float s = (float)1/128;
 
   for (int i=1;i<iter;i++){
-    /* Turing
+    // Turing
     A_old = A;
-    A=(A+t*s*(termbyterm(A_old,B)-A_old-alpha)).eval();
-    B=(B+t*s*(beta-termbyterm(A_old,B))).eval();
-    */
-    A_old = A;
-    A=(A+t*(-termbyterm(A_old,termbyterm(B,B))+0.055*(C-A))).eval();
-    B=(B+t*(-(0.117)*B+termbyterm(A_old,termbyterm(B,B)))).eval();
+    A=M*(A+t*s*(termbyterm(A_old,B)-A_old-alpha)).eval();
+    B=M*(B+t*s*(beta-termbyterm(A_old,B))).eval();
+    //A_old = A;
+    //A=(A+t*(-termbyterm(A_old,termbyterm(B,B))+0.055*(C-A))).eval();
+    //B=(B+t*(-(0.117)*B+termbyterm(A_old,termbyterm(B,B)))).eval();
     A=solver1.solve(A);
     B=solver2.solve(B);
     }
@@ -445,13 +446,13 @@ void callback() {
   ImGui::InputFloat("t", &t);
   ImGui::SameLine();
   ImGui::SliderInt("Offset", &iter, 0, 1000);
-  ImGui::SliderFloat("s", &s, 0, 30);
+  ImGui::SliderFloat("s", &s, 0, 1);
   ImGui::SliderFloat("alpha", &al, 0, 30);
   ImGui::SameLine();
   ImGui::SliderFloat("beta", &be, 0, 30);
-  ImGui::SliderFloat("da", &da, 0, 4);
+  ImGui::SliderFloat("da", &da, 0, 1);
   ImGui::SameLine();
-  ImGui::SliderFloat("db", &db, 0, 4);
+  ImGui::SliderFloat("db", &db, 0, 1);
   // addLaplacianExplicit();
   // addLaplacianImplicit();
   // addReactionDiffusion();
@@ -481,18 +482,24 @@ int main(int argc, char **argv) {
   // Read the mesh
   Eigen::MatrixXd origV;
   Eigen::MatrixXi origF;
+  Eigen::MatrixXd origV1;
+  Eigen::MatrixXi origF1;
 
   // Read the mesh
   igl::readOBJ(filename, origV, origF);
 
+  Eigen::SparseMatrix<double> S1;
+  igl::loop(origV.rows(), origF, S1, origF1);
+  origV1 = S1 * origV;
   Eigen::SparseMatrix<double> S;
-  igl::loop(origV.rows(), origF, S, meshF);
-  meshV = S * origV;
+  igl::loop(origV1.rows(), origF1, S, meshF);
+  meshV = S * origV1;
+
   int r=meshV.rows();
   rd = Eigen::VectorXd::Random(r, 1);
   //res=Eigen::MatrixXd::Zero(r,50);
-  res=allvals();
-  std::cout << res.block(79,0,1,100) << std::endl;
+  //res=allvals();
+  //std::cout << res.block(79,0,1,100) << std::endl;
   //t = 0.01;
 
   // Register the mesh with Polyscope
