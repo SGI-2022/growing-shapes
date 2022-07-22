@@ -482,18 +482,13 @@ int main(int argc, char **argv) {
   // Read the mesh
   Eigen::MatrixXd origV;
   Eigen::MatrixXi origF;
-  Eigen::MatrixXd origV1;
-  Eigen::MatrixXi origF1;
 
   // Read the mesh
   igl::readOBJ(filename, origV, origF);
 
-  Eigen::SparseMatrix<double> S1;
-  igl::loop(origV.rows(), origF, S1, origF1);
-  origV1 = S1 * origV;
   Eigen::SparseMatrix<double> S;
-  igl::loop(origV1.rows(), origF1, S, meshF);
-  meshV = S * origV1;
+  igl::loop(origV.rows(), origF, S, meshF);
+  meshV = S * origV;
 
   int r=meshV.rows();
   rd = Eigen::VectorXd::Random(r, 1);
