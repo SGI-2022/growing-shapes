@@ -1,154 +1,187 @@
 #include "polyscope/polyscope.h"
-
-#include <igl/PI.h>
-#include <igl/avg_edge_length.h>
-#include <igl/barycenter.h>
-#include <igl/boundary_loop.h>
-#include <igl/exact_geodesic.h>
-#include <igl/gaussian_curvature.h>
-#include <igl/invert_diag.h>
-#include <igl/lscm.h>
-#include <igl/massmatrix.h>
-#include <igl/per_vertex_normals.h>
-#include <igl/readOBJ.h>
-
-#include "polyscope/messages.h"
-#include "polyscope/point_cloud.h"
 #include "polyscope/surface_mesh.h"
+#include <Eigen/Core>
+#include <igl/readOBJ.h>
+#include <igl/massmatrix.h>
+#include <igl/cotmatrix.h>
+#include <igl/loop.h>
 
-#include <iostream>
-#include <unordered_set>
-#include <utility>
-
+#include <sstream>
 
 // The mesh, Eigen representation
 Eigen::MatrixXd meshV;
 Eigen::MatrixXi meshF;
 
-// Options for algorithms
-int iVertexSource = 7;
+struct RDParams
+{
+    Eigen::VectorXd s;
+    Eigen::VectorXd alpha;
+    Eigen::VectorXd beta;
+    double da;
+    double db;
+    double dt;
 
-void addCurvatureScalar() {
-  using namespace Eigen;
-  using namespace std;
+    Eigen::SparseMatrix<double> M;
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double> > Asolver;
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double> > Bsolver;
+};
 
-  VectorXd K;
-  igl::gaussian_curvature(meshV, meshF, K);
-  SparseMatrix<double> M, Minv;
-  igl::massmatrix(meshV, meshF, igl::MASSMATRIX_TYPE_DEFAULT, M);
-  igl::invert_diag(M, Minv);
-  K = (Minv * K).eval();
+void makePerturbedAlphaBeta(double alpha, double beta, double s, double da, double db, double perturbPercent, double dt, RDParams &params)
+{
+    int n = meshV.rows();
+    params.alpha.resize(n);
+    params.alpha.setConstant(alpha);
+    Eigen::VectorXd alphanoise(n);
+    alphanoise.setRandom();
+    params.alpha += alpha * perturbPercent * 0.01 * alphanoise;
 
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexScalarQuantity("gaussian curvature", K,
-                                polyscope::DataType::SYMMETRIC);
+    params.beta.resize(n);
+    params.beta.setConstant(beta);
+    Eigen::VectorXd betanoise(n);
+    betanoise.setRandom();
+    params.beta += beta * perturbPercent * 0.01 * betanoise;
+
+    params.s.resize(n);
+    params.s.setConstant(s);
+
+    params.da = da;
+    params.db = db;    
+
+    params.dt = dt;
+    
+    igl::massmatrix(meshV, meshF, igl::MassMatrixType::MASSMATRIX_TYPE_BARYCENTRIC, params.M);
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
+
+    Eigen::SparseMatrix<double> Amat = params.M - params.dt * params.da * L;
+    Eigen::SparseMatrix<double> Bmat = params.M - params.dt * params.db * L;
+
+    params.Asolver.compute(Amat);
+    params.Bsolver.compute(Bmat);
 }
 
-void computeDistanceFrom() {
-  Eigen::VectorXi VS, FS, VT, FT;
-  // The selected vertex is the source
-  VS.resize(1);
-  VS << iVertexSource;
-  // All vertices are the targets
-  VT.setLinSpaced(meshV.rows(), 0, meshV.rows() - 1);
-  Eigen::VectorXd d;
-  igl::exact_geodesic(meshV, meshF, VS, FS, VT, FT, d);
+void simulateOneStep(const Eigen::VectorXd& a, const Eigen::VectorXd& b, Eigen::VectorXd& newa, Eigen::VectorXd& newb, RDParams& params)
+{
+    int nverts = meshV.rows();
 
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexDistanceQuantity(
-          "distance from vertex " + std::to_string(iVertexSource), d);
+    Eigen::VectorXd F(nverts);
+    Eigen::VectorXd G(nverts);
+    for (int i = 0; i < nverts; i++)
+    {
+        F[i] = params.s[i] * (a[i] * b[i] - a[i] - params.alpha[i]);
+        G[i] = params.s[i] * (params.beta[i] - a[i] * b[i]);
+    }
+
+    Eigen::VectorXd arhs = params.M * (a + params.dt * F);
+    Eigen::VectorXd brhs = params.M * (b + params.dt * G);
+
+    newa = params.Asolver.solve(arhs);
+    newb = params.Bsolver.solve(brhs);
+
 }
 
-void computeParameterization() {
-  using namespace Eigen;
-  using namespace std;
+int main(int argc, char** argv) {
+    // Options
+    polyscope::options::autocenterStructures = true;
+    polyscope::view::windowWidth = 1024;
+    polyscope::view::windowHeight = 1024;
 
-  // Fix two points on the boundary
-  VectorXi bnd, b(2, 1);
-  igl::boundary_loop(meshF, bnd);
+    // Initialize polyscope
+    polyscope::init();
 
-  if (bnd.size() == 0) {
-    polyscope::warning("mesh has no boundary, cannot parameterize");
-    return;
-  }
+    std::string filename = "../spot.obj";
+    std::cout << "loading: " << filename << std::endl;
 
-  b(0) = bnd(0);
-  b(1) = bnd(round(bnd.size() / 2));
-  MatrixXd bc(2, 2);
-  bc << 0, 0, 1, 0;
+    Eigen::MatrixXd origV;
+    Eigen::MatrixXi origF;
 
-  // LSCM parametrization
-  Eigen::MatrixXd V_uv;
-  igl::lscm(meshV, meshF, b, bc, V_uv);
+    // Read the mesh
+    igl::readOBJ(filename, origV, origF);
 
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexParameterizationQuantity("LSCM parameterization", V_uv);
-}
+    Eigen::SparseMatrix<double> S;
+    igl::loop(origV.rows(), origF, S, meshF);
+    meshV = S * origV;
 
-void computeNormals() {
-  Eigen::MatrixXd N_vertices;
-  igl::per_vertex_normals(meshV, meshF, N_vertices);
+    double alpha = 12.0;
+    double beta = 16.0;
 
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexVectorQuantity("libIGL vertex normals", N_vertices);
-}
+    double s = 1.0 / 128.0;
+    double da = 1e-4;
+    double db = 1e-3;
+    double percentNoise = 0.1;
+    double dt = 0.1;
 
-void callback() {
+    // Register the mesh with Polyscope
+    auto* mesh = polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
 
-  static int numPoints = 2000;
-  static float param = 3.14;
+    RDParams params;
+    int nverts = meshV.rows();
+    makePerturbedAlphaBeta(alpha, beta, s, da, db, percentNoise, dt, params);
 
-  ImGui::PushItemWidth(100);
+    Eigen::VectorXd a(nverts);
+    Eigen::VectorXd b(nverts);
+    a.setConstant(4.0);
+    b.setConstant(4.0);
 
-  // Curvature
-  if (ImGui::Button("add curvature")) {
-    addCurvatureScalar();
-  }
-  
-  // Normals 
-  if (ImGui::Button("add normals")) {
-    computeNormals();
-  }
+    auto *acolor = mesh->addVertexScalarQuantity("a", a);
+    acolor->setEnabled(true);
+    mesh->addVertexScalarQuantity("b", b);
 
-  // Param
-  if (ImGui::Button("add parameterization")) {
-    computeParameterization();
-  }
+    int stepsPerFrame = 1;
 
-  // Geodesics
-  if (ImGui::Button("compute distance")) {
-    computeDistanceFrom();
-  }
-  ImGui::SameLine();
-  ImGui::InputInt("source vertex", &iVertexSource);
+    // Add the callback
+    polyscope::state::userCallback = [&]()
+    {
+        bool reset = false;
+        if (ImGui::Button("Reset Animation"))
+            reset = true;
 
-  ImGui::PopItemWidth();
-}
+        ImGui::InputInt("Steps per frame", &stepsPerFrame);
 
-int main(int argc, char **argv) {
+        ImGui::Separator();
 
-  // Options
-  polyscope::options::autocenterStructures = true;
-  polyscope::view::windowWidth = 1024;
-  polyscope::view::windowHeight = 1024;
+        if (ImGui::InputDouble("dt", &dt))
+            reset = true;
 
-  // Initialize polyscope
-  polyscope::init();
+        if (ImGui::InputDouble("s", &s))
+            reset = true;
 
-  std::string filename = "../spot.obj";
-  std::cout << "loading: " << filename << std::endl;
+        if (ImGui::InputDouble("da", &da))
+            reset = true;
+        
+        if (ImGui::InputDouble("db", &db))
+            reset = true;
 
-  // Read the mesh
-  igl::readOBJ(filename, meshV, meshF);
+        if (ImGui::InputDouble("alpha", &alpha))
+            reset = true;
+        
+        if (ImGui::InputDouble("beta", &beta))
+            reset = true;
 
-  // Register the mesh with Polyscope
-  polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+        if (ImGui::InputDouble("% noise", &percentNoise))
+            reset = true;
 
-  // Add the callback
-  polyscope::state::userCallback = callback;
+        if (reset)
+        {
+            makePerturbedAlphaBeta(alpha, beta, s, da, db, percentNoise, dt, params);
+            a.setConstant(4.0);
+            b.setConstant(4.0);
+        }
 
-  // Show the gui
-  polyscope::show();
+        for (int i = 0; i < stepsPerFrame; i++)
+        {
+            Eigen::VectorXd newa, newb;
+            simulateOneStep(a, b, newa, newb, params);
+            a = newa;
+            b = newb;
+        }
+        mesh->addVertexScalarQuantity("a", a);
+        mesh->addVertexScalarQuantity("b", b);
+        
+    };
 
-  return 0;
+    // Show the gui
+    polyscope::show();
+
+    return 0;
 }
