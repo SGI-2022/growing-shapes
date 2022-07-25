@@ -196,8 +196,8 @@ void computeImplicitReactionDiffusionScott(float numSteps, float timeStep) {
     Eigen::VectorXd U = Eigen::VectorXd::Constant(L.rows(), 1, 1);
     Eigen::VectorXd V = Eigen::VectorXd::Constant(L.rows(), 1, 0);
 
-    Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, 0.018);  // feed rate
-    Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, 0.051); // degrading rate
+    Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, 0.0545);  // feed rate
+    Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, 0.062); // degrading rate
 
     float du = 1; // diffusion rate
     float dv = (float)0.5; // diffusion rate
@@ -211,19 +211,17 @@ void computeImplicitReactionDiffusionScott(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> I(L.rows(), L.rows());
     I.setIdentity();
 
-    Eigen::SparseMatrix<double> u_diag(L.rows(), L.rows());
-    Eigen::SparseMatrix<double> v_diag(L.rows(), L.rows());
+    Eigen::SparseMatrix<double> temp1 = (I - timeStep * du * L).eval();
+    Eigen::SparseMatrix<double> temp2 = (I - timeStep * dv * L).eval();
+
+    // do I need two solvers??
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1;
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver2;
+
+    solver1.compute(temp1);
+    solver2.compute(temp2);
 
     for (int i = 0; i < numSteps; i++) {
-        Eigen::SparseMatrix<double> temp1 = (I - timeStep * du * L).eval();
-        Eigen::SparseMatrix<double> temp2 = (I - timeStep * dv * L).eval();
-
-        // do I need two solvers??
-        Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1;
-        Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver2;
-        solver1.compute(temp1);
-        solver2.compute(temp2);
-
         Eigen::VectorXd UVV = U.array() * V.array() * V.array();
         U = solver1.solve(U + timeStep * (F - F * U - UVV));
         V = solver2.solve(V + timeStep * (UVV - (k + F) * V));
@@ -362,16 +360,27 @@ int main(int argc, char **argv) {
   std::string filename = "../spot.obj";
   std::cout << "loading: " << filename << std::endl;
 
-  Eigen::MatrixXd origV;
-  Eigen::MatrixXi origF;
-
+  // Read the mesh
+  Eigen::MatrixXd origV, meshV1;
+  Eigen::MatrixXi origF, meshF1;
   // Read the mesh
   igl::readOBJ(filename, origV, origF);
+  Eigen::SparseMatrix<double> S, S1;
+  igl::loop(origV.rows(), origF, S1, meshF1);
+  meshV1 = S1 * origV;
+  igl::loop(meshV1.rows(), meshF1, S, meshF);
+  meshV = S * meshV1;
+ 
+  //// Read the mesh
+  //Eigen::MatrixXd origV;
+  //Eigen::MatrixXi origF;
 
-  Eigen::SparseMatrix<double> S;
-  igl::loop(origV.rows(), origF, S, meshF);
-  igl::loop(origV.rows(), origF, S, meshF);
-  meshV = S * origV;
+  //igl::readOBJ(filename, origV, origF);
+
+  //Eigen::SparseMatrix<double> S;
+  //igl::loop(origV.rows(), origF, S, meshF);
+  //igl::loop(origV.rows(), origF, S, meshF);
+  //meshV = S * origV;
 
   Eigen::VectorXd noise(meshV.rows());
   noise.setRandom();
