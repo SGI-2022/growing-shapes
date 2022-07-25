@@ -33,13 +33,13 @@ Eigen::MatrixXi meshF;
 Eigen::MatrixXd res;
 Eigen::VectorXd rd;
 
-float t=1;//0.1;
+double t=1;//0.1;
 int iter = 0;
-float s=(float)0.007812;
-float al = 0.055;//12;
-float be=0.062;//16;
-float da=1.0;//0.00005;
-float db=0.5;//0.0002;
+double s=(double)0.007812;
+double al = 0.018;//12;
+double be=0.051;//16;
+double da=1.0;//0.00005;
+double db=0.5;//0.0002;
 
 // Options for algorithms
 int iVertexSource = 7;
@@ -91,10 +91,10 @@ Eigen::MatrixXd allvals(){
     solver2.compute(Y2);
 
     for(int i=0;i<r;i++){
-      float rn = rand() % 201;
-      float rn1 = rand() % 201;
-      rn=(float)(rn-100)/10000;
-      rn1=(float)(rn1-100)/10000;
+      double rn = rand() % 201;
+      double rn1 = rand() % 201;
+      rn=(double)(rn-100)/10000;
+      rn1=(double)(rn1-100)/10000;
       beta(i) = beta(i) + rn1;
       alpha(i)=alpha(i)+rn;
     }
@@ -157,11 +157,11 @@ void addReactionDiffusion() {
     }
 
     //temp.setZero();
-    float da=1.0;//0.25*0.25;//*0.25;
-    float db=0.5;//0.25;
-    float k=0.062;//0.062;
-    float f=0.0545;//0.055;
-    float s =(float)128;//1.0;
+    double da=1.0;//0.25*0.25;//*0.25;
+    double db=0.5;//0.25;
+    double k=0.062;//0.062;
+    double f=0.0545;//0.055;
+    double s =(double)128;//1.0;
 
     for (int i=0;i<iter;i++){
       A_old=A;
@@ -171,8 +171,8 @@ void addReactionDiffusion() {
 
     auto scalarQ = polyscope::getSurfaceMesh("input mesh")
             ->addVertexScalarQuantity("reaction diffusion", A);
-    float m1 = A.minCoeff();
-    float m2 = A.maxCoeff();
+    double m1 = A.minCoeff();
+    double m2 = A.maxCoeff();
     scalarQ->setMapRange({m1,m2});
 }
 
@@ -183,30 +183,28 @@ void addReactionDiffusion2() {
 
     VectorXd A = res.block(0,iter,r,1);
 
-    polyscope::getSurfaceMesh("input mesh")
-            ->addVertexScalarQuantity("reaction diffusion 2", A);
+    // polyscope::getSurfaceMesh("input mesh")
+    //          ->addVertexScalarQuantity("reaction diffusion 2", A);
+    auto scalarQ = polyscope::getSurfaceMesh("input mesh")
+           ->addVertexScalarQuantity("reaction diffusion 2", A);
+    scalarQ->setMapRange({0.0,255.0});
 }
 
 Eigen::MatrixXd reactiondiffusionimplicit(int ite){
   using namespace Eigen;
-  SparseMatrix<double> L, M, Minv;
-  igl::massmatrix(meshV,meshF,igl::MASSMATRIX_TYPE_VORONOI,M);
-  //igl::invert_diag(M,Minv);
+  SparseMatrix<double> L;
   igl::cotmatrix(meshV,meshF,L);
-  //MatrixXd ss;
-  //ss=MatrixXd(L);
-  BDCSVD<MatrixXd> svd(MatrixXd(L), ComputeThinU | ComputeThinV);
-  //MatrixXd L_new = svd.matrixU() * svd.matrixV().transpose();
-  //L = L_new.sparseView();
-  //L=Minv*L;
 
   int r = meshV.rows();
   VectorXd A(r), A_old(r), B(r), B_old(r), C(r), beta(r), alpha(r); 
   alpha = VectorXd::Constant(r,1,al)+al*0.001*rd;
   beta = VectorXd::Constant(r,1,be)+be*0.001*rd;
   for(int i=0;i<r;i++){
-      A(i) = 4.0;
-      B(i) = 4.0;
+      A(i) = 1.0;
+      B(i) = 0.0;
+      if(((meshV(i,0)-meshV(100,0))*(meshV(i,0)-meshV(100,0))+(meshV(i,1)-meshV(100,1))*(meshV(i,1)-meshV(100,1))+(meshV(i,2)-meshV(100,2))*(meshV(i,2)-meshV(100,2)))<0.01){
+          B(i)=1.0;
+      }
 
       C(i)=1;
   }
@@ -215,28 +213,23 @@ Eigen::MatrixXd reactiondiffusionimplicit(int ite){
   Y2.setIdentity();
   SimplicialLDLT<SparseMatrix<double>> solver1;
   SimplicialLDLT<SparseMatrix<double>> solver2;
-  //da=0.00005;
-  //db=0.0002;
+
   Y1 = (Y1 - da*t*L).eval();
   Y2 = (Y2 - db*t*L).eval();
   solver1.compute(Y1);
   solver2.compute(Y2);
 
-  float s = (float)1/128;
+  double s = (double)1/128;
   MatrixXd res(r,ite+1);
   res.setZero();
-  res.block(0,0,r,1)=A;
-  for (int i=1;i<ite;i++){
-    // Turing
-    //A_old = A;
-    //A=M*(A+t*s*(termbyterm(A_old,B)-A_old-alpha)).eval();
-    //B=M*(B+t*s*(beta-termbyterm(A_old,B))).eval();
+  res.block(0,0,r,1)=(A-B)*255;
+  for (int i=1;i<ite+1;i++){
     A_old=A;
-    A = (A+t*(da*L*A - termbyterm(A_old,termbyterm(B,B))+al*C-al*A)).eval();
-    B = (B+t*(db*L*B + termbyterm(A_old,termbyterm(B,B))-(be+al)*B)).eval();
+    A = (A+t*( - termbyterm(A_old,termbyterm(B,B))+al*C-al*A)).eval();
+    B = (B+t*( termbyterm(A_old,termbyterm(B,B))-(be+al)*B)).eval();
     A=solver1.solve(A);
     B=solver2.solve(B);
-    res.block(0,i,r,1)=A;
+    res.block(0,i,r,1)=(A-B)*255;
     }
 
   return res;
@@ -267,10 +260,6 @@ void addLaplacianImplicit(){
 
     polyscope::getSurfaceMesh("input mesh")
         ->addVertexScalarQuantity("laplacian implicit", K);
-
-    //auto pmesh = polyscope::getSurfaceMesh("input mesh");
-    //auto scalarQ = pmesh->addVertexScalarQuantity("laplacian explicit", K);
-    //scalarQ->setMapRange({-1.,1.});
 }
 
 
@@ -278,16 +267,16 @@ void callback() {
 
   ImGui::PushItemWidth(100);
 
-//  ImGui::InputFloat("t", &t);
+//  ImGui::Inputdouble("t", &t);
 //  ImGui::SameLine();
-    ImGui::SliderInt("iter", &iter, 0, 20000);
-//  ImGui::SliderFloat("s", &s, 0, 1);
-//  ImGui::SliderFloat("alpha", &al, 0, 30);
+    ImGui::SliderInt("iter", &iter, 0, 5000);
+//  ImGui::Sliderdouble("s", &s, 0, 1);
+//  ImGui::Sliderdouble("alpha", &al, 0, 30);
 //  ImGui::SameLine();
-//  ImGui::SliderFloat("beta", &be, 0, 30);
-//  ImGui::SliderFloat("da", &da, 0, 1);
+//  ImGui::Sliderdouble("beta", &be, 0, 30);
+//  ImGui::Sliderdouble("da", &da, 0, 1);
 //  ImGui::SameLine();
-//  ImGui::SliderFloat("db", &db, 0, 1);
+//  ImGui::Sliderdouble("db", &db, 0, 1);
   //reactiondiffusionimplicit();
   addReactionDiffusion2();
 
@@ -311,19 +300,21 @@ int main(int argc, char **argv) {
   std::cout << "loading: " << filename << std::endl;
 
   // Read the mesh
-  Eigen::MatrixXd origV;
-  Eigen::MatrixXi origF;
+  Eigen::MatrixXd origV, meshV1;
+  Eigen::MatrixXi origF, meshF1;
 
   // Read the mesh
   igl::readOBJ(filename, origV, origF);
 
-  Eigen::SparseMatrix<double> S;
-  igl::loop(origV.rows(), origF, S, meshF);
-  meshV = S * origV;
+  Eigen::SparseMatrix<double> S, S1;
+  igl::loop(origV.rows(), origF, S1, meshF1);
+  meshV1 = S1 * origV;
+  igl::loop(meshV1.rows(), meshF1, S, meshF);
+  meshV = S * meshV1;
 
   int r=meshV.rows();
   rd = Eigen::VectorXd::Random(r, 1);
-  res=reactiondiffusionimplicit(20000);
+  res=reactiondiffusionimplicit(5000);
 
   // Register the mesh with Polyscope
   polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
