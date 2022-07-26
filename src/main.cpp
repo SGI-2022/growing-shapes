@@ -13,6 +13,9 @@
 #include <igl/readOBJ.h>
 #include <igl/loop.h>
 #include <igl/writeOBJ.h>
+#include <igl/slice_into.h>
+#include <igl/procrustes.h>
+#include <igl/adjacency_list.h>
 
 #include "polyscope/messages.h"
 #include "polyscope/point_cloud.h"
@@ -28,11 +31,11 @@ using namespace std;
 Eigen::MatrixXd meshV;
 Eigen::MatrixXi meshF;
 
+Eigen::MatrixXd V_rest, V_target;
+Eigen::MatrixXi F_rest, F_target;
+
 Eigen::VectorXd noise_a;
 Eigen::VectorXd noise_b;
-
-// Options for algorithms
-int iVertexSource = 7;
 
 void computeExplicitHeat(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
@@ -60,21 +63,13 @@ void computeImplicitHeat(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> I(L.rows(), L.rows());
     I.setIdentity();
 
-    // first method
     Eigen::SparseMatrix<double> temp = (I - timeStep * L).eval();
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
     solver.compute(temp);
-    //Eigen::MatrixXd temp_inv = temp.inverse();
+
     for (int i = 0; i < numSteps; i++) {
-        //k = temp_inv * k;
         k = solver.solve(k);
     }
-
-    //// second method
-    //Eigen::EigenSolver<Eigen::MatrixXd> es(temp);
-    //auto eigenVecs = es.eigenvectors();
-    //auto eigenVals = es.eigenvalues();
-    //k = 1 / ((eigenVals.col(0)[1]) ^ int(numSteps)) * k;
 
     auto temp2 = polyscope::getSurfaceMesh("input mesh");
     auto mesh = temp2->addVertexScalarQuantity("implicit heat", k);
@@ -85,22 +80,14 @@ void computeExplicitReactionDiffusionTuring(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L); 
 
-    //Eigen::VectorXd a;
-    //igl::gaussian_curvature(meshV, meshF, a);
-    //Eigen::VectorXd b;
-    //igl::gaussian_curvature(meshV, meshF, b);
-
     Eigen::VectorXd a = Eigen::VectorXd::Constant(L.rows(), 1, 4);
     Eigen::VectorXd b = Eigen::VectorXd::Constant(L.rows(), 1, 4);
 
-    Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12);  // decay rate of a
-    Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16); // growing rate of b
+    Eigen::VectorXd alpha = Eigen::VectorXd::Constant(L.rows(), 1, 12) + noise_a;;  // decay rate of a
+    Eigen::VectorXd beta = Eigen::VectorXd::Constant(L.rows(), 1, 16) + noise_b; // growing rate of b
     float da = (float)1/16; // diffusion rate
     float db = (float)1/4; // diffusion rate
     float s = (float)1/128; // reaction rate
-
-    alpha = alpha + noise_a;
-    beta = beta + noise_b;
  
     // Turing
     for (int i = 0; i < numSteps; i++) {
@@ -112,14 +99,12 @@ void computeExplicitReactionDiffusionTuring(float numSteps, float timeStep) {
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
     auto mesh = temp->addVertexScalarQuantity("Turing Explicit", a);
-    //mesh->setMapRange({ -0.1,0.1 });
 }
 
 void computeExplicitReactionDiffusionScott(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L);
 
-    int randomNum = rand() % 2;
     Eigen::VectorXd U = Eigen::VectorXd::Constant(L.rows(), 1, 1);
     Eigen::VectorXd V = Eigen::VectorXd::Constant(L.rows(), 1, 0);
 
@@ -128,6 +113,7 @@ void computeExplicitReactionDiffusionScott(float numSteps, float timeStep) {
 
     float du = 1; // diffusion rate
     float dv = (float)0.5; // diffusion rate
+
     for (int i = 0; i < meshV.rows(); i++) {
         if (((meshV(i, 0) - meshV(100, 0)) * (meshV(i, 0) - meshV(100, 0)) + (meshV(i, 1) - meshV(100, 1)) * (meshV(i, 1) - meshV(100, 1)) + (meshV(i, 2) - meshV(100, 2)) * (meshV(i, 2) - meshV(100, 2))) < 0.01) {
             V(i) = 1.0;
@@ -143,7 +129,6 @@ void computeExplicitReactionDiffusionScott(float numSteps, float timeStep) {
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
     auto mesh = temp->addVertexScalarQuantity("Gray & Scott Explicit", U);
-    //mesh->setMapRange({ -0.1,0.1 });
 }
 
 void computeImplicitReactionDiffusionTuring(float numSteps, float timeStep) {
@@ -174,7 +159,6 @@ void computeImplicitReactionDiffusionTuring(float numSteps, float timeStep) {
         Eigen::SparseMatrix<double> temp1 = (I - timeStep * da * L + timeStep * s * I - timeStep * s * b_diag).eval();
         Eigen::SparseMatrix<double> temp2 = (I - timeStep * db * L + timeStep * s * a_diag).eval();
 
-        // do I need two solvers??
         Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1;
         Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver2;
         solver1.compute(temp1);
@@ -231,181 +215,388 @@ void computeImplicitReactionDiffusionScott(float numSteps, float timeStep, doubl
     auto mesh = temp->addVertexScalarQuantity("Scott Implicit", U);
 }
 
-void callback() {
+void create2DGridManual(int n, int m, Eigen::MatrixXd& V, Eigen::MatrixXi& F, float scale_1, float scale_2, bool displace, bool rotate) {
+    using namespace Eigen;
+    V.resize((n + 1) * (m + 1), 3);
+    F.resize(n * m * 2, 3);
 
-  static int numPoints = 2000;
-  static float param = 3.14;
+    for (int i = 0; i < (n + 1); i++) { // row
+        for (int j = 0; j < (m + 1); j++) { // col
+            float z;
+            if (displace) {
+                z = j * 0.5 + (float(rand()) / float((RAND_MAX)) * float(5.0));
+            }
+            else {
+                z = 0;
+            }
+            if (rotate) {
+                V.row((m + 1) * i + j) = Vector3d(-j * scale_1, z, -i * scale_2);
+            }
+            else {
+                V.row((m + 1) * i + j) = Vector3d(-j * scale_1, -i * scale_2, z);
+            }
+        }
+    }
 
-  //// Explicit Heat Equation
-  //ImGui::Button("Explicit Heat Equation");
+    int idx = 0;
+    for (int i = 0; i < (n); i++) {
+        for (int j = 0; j < (m); j++) {
+            F.row(idx) = Vector3i((m + 1) * i + j, (m + 1) * (i + 1) + j, (m + 1) * i + j + 1);
+            idx += 1;
+            F.row(idx) = Vector3i((m + 1) * (i + 1) + j, (m + 1) * (i + 1) + j + 1, (m + 1) * i + j + 1);
+            idx += 1;
+        }
+    }
+}
 
-  //static float timeStep1 = 0.05;
-  //ImGui::PushItemWidth(50);
-  //ImGui::InputFloat("Time Step##explicit", &timeStep1);
-  //ImGui::PopItemWidth();
+void create2DGridVariationsAndSave() {
+    Eigen::MatrixXd V1, V2, V3, V4;
+    Eigen::MatrixXi F1, F2, F3, F4;
+    create2DGridManual(10, 20, V1, F1, 1, 1, false, false);
+    igl::writeOBJ("../original_grid.obj", V1, F1);
 
-  //static float max1 = 200;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(75);
-  //ImGui::InputFloat("Max##explicit", &max1);
-  //ImGui::PopItemWidth();
-  //
-  //static float numSteps1 = 0;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(150);
-  //if (ImGui::SliderFloat("Num Steps##explicit", &numSteps1, 0, max1)) {
-  //    computeExplicitHeat(numSteps1, timeStep1);
-  //}
-  //ImGui::PopItemWidth();
+    create2DGridManual(10, 20, V2, F2, 2, 3, false, false);
+    igl::writeOBJ("../scaled_grid.obj", F2, F2);
 
-  //// Semi-implicit Heat Equation
-  //ImGui::Button("Semi-implicit Heat Equation");
+    create2DGridManual(10, 20, V3, F3, 1, 1, true, false);
+    igl::writeOBJ("../z_displaced_grid.obj", V3, F3);
 
-  //static float timeStep2 = 0.05;
-  //ImGui::PushItemWidth(50);
-  //ImGui::InputFloat("Time Step##implicit", &timeStep2);
-  //ImGui::PopItemWidth();
+    create2DGridManual(10, 20, V4, F4, 1, 1, false, true);
+    igl::writeOBJ("../y_rotated_grid.obj", V4, F4);
+}
 
-  //static float max2 = 200;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(75);
-  //ImGui::InputFloat("Max##implicit", &max2);
-  //ImGui::PopItemWidth();
+void procruste(Eigen::MatrixXd &V_procruste) {
+    int n_faces = F_rest.rows();
+    for (int i = 0; i < n_faces; i++) { // iterating triangle by triangle 
+        Eigen::VectorXi v_indices = F_rest.row(i); //vertex indices in this triangle
 
-  //static float numSteps2 = 0;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(150);
-  //if (ImGui::SliderFloat("Num Steps##implicit", &numSteps2, 0, max2)) {
-  //    computeImplicitHeat(numSteps2, timeStep2);
-  //}
-  //ImGui::PopItemWidth();
+        Eigen::MatrixXd V_rest_triangle, V_target_triangle;
+        igl::slice(V_rest, v_indices, 1, V_rest_triangle); //slice: Y = X(I,:)
+        igl::slice(V_target, v_indices, 1, V_target_triangle); //slice: Y = X(I,:)
 
-  //// Reaction Diffusion Turing
-  //ImGui::Button("Turing Reaction Diffusion Explicit");
+        double scale;
+        Eigen::MatrixXd R;
+        Eigen::VectorXd t;
+        igl::procrustes(V_rest_triangle, V_target_triangle, true, false, scale, R, t);
+        R *= scale;
+        Eigen::MatrixXd V_procruste_triangle = (V_rest_triangle * R).rowwise() + t.transpose();
+        igl::slice_into(V_procruste_triangle, v_indices, 1, V_procruste); //slice into: Y(I,:) = X
+    }
+}
 
-  //static float timeStep3 = 0.05;
-  //ImGui::PushItemWidth(50);
-  //ImGui::InputFloat("Time Step##Turing", &timeStep3);
-  //ImGui::PopItemWidth();
+void procrusteIteration(float numSteps) {
+    for (int i = 0; i < numSteps; i++) {
+        procruste(V_rest); //update V_rest mesh
+    }
 
-  //static float max3 = 200;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(75);
-  //ImGui::InputFloat("Max##Turing", &max3);
-  //ImGui::PopItemWidth();
+    polyscope::registerSurfaceMesh("rest mesh", V_rest, F_rest);
+    polyscope::registerSurfaceMesh("target mesh", V_target, F_target);
 
-  //static float numSteps3 = 0;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(150);
-  //if (ImGui::SliderFloat("Num Steps##Turing", &numSteps3, 0, max3)) {
-  //    computeExplicitReactionDiffusionTuring(numSteps3, timeStep3);
-  //}
-  //ImGui::PopItemWidth();
+    //auto temp = polyscope::getSurfaceMesh("rest mesh");
+    //temp->addVertexScalarQuantity("rest", V_rest);
+    ////temp->addFaceScalarQuantity("rest_", F_rest);
 
-  //// Reaction Diffusion Gray and Scott
-  //static float timeStep4 = 0.05;
-  //ImGui::PushItemWidth(50);
-  //ImGui::InputFloat("Time Step##Scott", &timeStep4);
-  //ImGui::PopItemWidth();
+    //auto temp2 = polyscope::getSurfaceMesh("target mesh");
+    //temp2->addVertexScalarQuantity("target", V_target);
+    ////temp2->SurfaceMesh::addFaceScalarQuantity("target_", F_target);
+}
 
-  //static float numSteps4 = 200;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(75);
-  //ImGui::InputFloat("Max##Scott", &numSteps4);
-  //ImGui::PopItemWidth();
+void growingShapes(float numSteps, float timeStep, double F_val, double k_val, float alpha, float beta) {
+    for (int i = 0; i < numSteps; i++) {
+        // simulate reaction-diffusion
+        computeImplicitReactionDiffusionScott(numSteps, timeStep, F_val, k_val);
+        // update T based on morphegens
+        procrusteIteration(numSteps);
 
-  //if (ImGui::Button("Gray & Scott Reaction Diffusion Explicit"))
-  //    computeExplicitReactionDiffusionScott(numSteps4, timeStep4);
+        for (int j = 0; j < F_rest.rows(); j++) {
+            for (int jj = 0; i < 3; i++) {
+                F_rest.row(j)(jj) += alpha * (F_target.row(j)(jj) - F_rest.row(j)(jj)); // V = V + alpha * (V~ - V)
+            }
+        }
 
-  // Implicit Reaction Diffusion Turing
-  //static float timeStep5 = 0.05;
-  //ImGui::PushItemWidth(50);
-  //ImGui::InputFloat("Time Step##Turing_implicit", &timeStep5);
-  //ImGui::PopItemWidth();
+        // find adjacent faces
+        std::vector<std::vector<Eigen::MatrixXd>> adjFaces;
+        vector<vector<Eigen::MatrixXd>> notUsing;
+        igl::vertex_triangle_adjacency(meshV.rows(), meshF, adjFaces, notUsing);
 
-  //static float numSteps5 = 200;
-  //ImGui::SameLine();
-  //ImGui::PushItemWidth(75);
-  //ImGui::InputFloat("Max##Turing_implicit", &numSteps5);
-  //ImGui::PopItemWidth();
+        unordered_set<Eigen::MatrixXd> done;
+        Eigen::MatrixXd firstTriangle;
+        Eigen::MatrixXd secondTriangle;
 
-  //if (ImGui::Button("Turing Reaction Diffusion Implicit"))
-  //    computeImplicitReactionDiffusionTuring(numSteps5, timeStep5);
+        unordered_set<float> verts;
 
-  // Implicit Reaction Diffusion Scott
-  static float timeStep6 = 1;
-  ImGui::PushItemWidth(50);
-  ImGui::InputFloat("Time Step##Scott_implicit", &timeStep6);
-  ImGui::PopItemWidth();
+        // k = number of vertices
+        for (int k = 0; k < adjFaces.size(); k++) {
+            for (int l = 0; l < adjFaces[k].size(); l++) {
+                verts.clear();
 
-  static double F = 0.025;
-  ImGui::PushItemWidth(75);
-  ImGui::InputDouble("F##Scott_implicit", &F);
-  ImGui::PopItemWidth();
+                // if we haven't used this triangle yet to make a rhombus
+                if (done.find(adjFaces[k][l]) == done.end()) {
+                    if (firstTriangle.size() == 0)
+                        firstTriangle = adjFaces[k][l];
+                    else if (secondTriangle.size() == 0)
+                        secondTriangle = adjFaces[k][l];
+                    else {
+                        // find indices of 1st triangle in the face mesh
+                        Eigen::MatrixXd rows, columns, notUsed;
+                        igl::find(firstTriangle, rows, columns, notUsed);
 
-  static double k = 0.06;
-  ImGui::PushItemWidth(75);
-  ImGui::InputDouble("k##Scott_implicit", &k);
-  ImGui::PopItemWidth();
+                        for (int kk = 0; kk < 3; kk++) {
+                            // add vertex to done set
+                            verts.insert(F_rest.row(rows(kk))(columns(kk)));
+                            // V = V + beta * (V~ - V) for first triangle
+                            F_rest.row(rows(kk))(columns(kk)) += beta * (F_target.row(rows(kk))(columns(kk)) - F_rest.row(rows(kk))(columns(kk)));
+                        }
 
-  static float numSteps6 = 200;
-  ImGui::PushItemWidth(75);
-  ImGui::InputFloat("Number of Steps##Scott_implicit", &numSteps6);
-  ImGui::PopItemWidth();
+                        // find indices of 2nd triangle in the face mesh
+                        igl::find(secondTriangle, rows, columns, notUsed);
 
-  if (ImGui::Button("Gray-Scott Reaction Diffusion Implicit"))
-      computeImplicitReactionDiffusionScott(numSteps6, timeStep6, F, k);
+                        for (int kk = 0; kk < 3; kk++) {
+                            // if the vertex is not the one shared vertex
+                            if (verts.find(F_rest.row(rows(kk))(columns(kk))) == verts.end())
+                                // add vertex to done set
+                                verts.insert(F_rest.row(rows(kk))(columns(kk)));
+                            // V = V + beta * (V~ - V) for second triangle
+                            F_rest.row(rows(kk))(columns(kk)) += beta * (F_target.row(rows(kk))(columns(kk)) - F_rest.row(rows(kk))(columns(kk)));
+                        }
+                        break;
+                    }
+                    // add completed face
+                    done.insert(adjFaces[k][l]);
+                }
+
+            }
+        }
+
+    }
+}
+
+void callbackHeat() {
+    // Explicit Heat Equation
+    ImGui::Button("Explicit Heat Equation");
+    static float timeStep = 0.05;
+    ImGui::PushItemWidth(50);
+    ImGui::InputFloat("Time Step##explicit", &timeStep);
+    ImGui::PopItemWidth();
+
+    static float max = 200;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(75);
+    ImGui::InputFloat("Max##explicit", &max);
+    ImGui::PopItemWidth();
+
+    static float numSteps = 0;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(150);
+    if (ImGui::SliderFloat("Num Steps##explicit", &numSteps, 0, max))
+        computeExplicitHeat(numSteps, timeStep);
+    ImGui::PopItemWidth();
+
+    // Semi-implicit Heat Equation
+    ImGui::Button("Semi-implicit Heat Equation");
+
+    static float timeStep2 = 0.05;
+    ImGui::PushItemWidth(50);
+    ImGui::InputFloat("Time Step##implicit", &timeStep2);
+    ImGui::PopItemWidth();
+
+    static float max2 = 200;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(75);
+    ImGui::InputFloat("Max##implicit", &max2);
+    ImGui::PopItemWidth();
+
+    static float numSteps2 = 0;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(150);
+    if (ImGui::SliderFloat("Num Steps##implicit", &numSteps2, 0, max2))
+        computeImplicitHeat(numSteps2, timeStep2);
+    ImGui::PopItemWidth();
+}
+
+void callbackExplicitRd() {
+    Eigen::VectorXd noise(meshV.rows());
+    noise.setRandom();
+    noise_a = noise;
+
+    Eigen::VectorXd noise2(meshV.rows());
+    noise2.setRandom();
+    noise_b = noise2;
+
+    // Reaction Diffusion Turing
+    ImGui::Button("Turing Reaction Diffusion Explicit");
+
+    static float timeStep = 0.05;
+    ImGui::PushItemWidth(50);
+    ImGui::InputFloat("Time Step##Turing", &timeStep);
+    ImGui::PopItemWidth();
+
+    static float max = 200;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(75);
+    ImGui::InputFloat("Max##Turing", &max);
+    ImGui::PopItemWidth();
+
+    static float numSteps = 0;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(150);
+    if (ImGui::SliderFloat("Num Steps##Turing", &numSteps, 0, max))
+        computeExplicitReactionDiffusionTuring(numSteps, timeStep);
+    ImGui::PopItemWidth();
+
+    // Reaction Diffusion Gray and Scott
+    static float timeStep2 = 0.05;
+    ImGui::PushItemWidth(50);
+    ImGui::InputFloat("Time Step##Scott", &timeStep2);
+    ImGui::PopItemWidth();
+
+    static float numSteps2 = 200;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(75);
+    ImGui::InputFloat("Max##Scott", &numSteps2);
+    ImGui::PopItemWidth();
+
+    if (ImGui::Button("Gray & Scott Reaction Diffusion Explicit"))
+        computeExplicitReactionDiffusionScott(numSteps2, timeStep2);
+}
+
+void callbackImplicitRd() {
+    Eigen::VectorXd noise(meshV.rows());
+    noise.setRandom();
+    noise_a = noise;
+
+    Eigen::VectorXd noise2(meshV.rows());
+    noise2.setRandom();
+    noise_b = noise2;
+
+    // Implicit Reaction Diffusion Turing
+    static float timeStep = 0.05;
+    ImGui::PushItemWidth(50);
+    ImGui::InputFloat("Time Step##Turing_implicit", &timeStep);
+    ImGui::PopItemWidth();
+
+    static float numSteps = 2000;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(75);
+    ImGui::InputFloat("Max##Turing_implicit", &numSteps);
+    ImGui::PopItemWidth();
+
+    if (ImGui::Button("Turing Reaction Diffusion Implicit"))
+        computeImplicitReactionDiffusionTuring(numSteps, timeStep);
+
+    // Implicit Reaction Diffusion Scott
+    static float timeStep2 = 1;
+    ImGui::PushItemWidth(50);
+    ImGui::InputFloat("Time Step##Scott_implicit", &timeStep2);
+    ImGui::PopItemWidth();
+
+    static double F = 0.025;
+    ImGui::PushItemWidth(75);
+    ImGui::InputDouble("F##Scott_implicit", &F);
+    ImGui::PopItemWidth();
+
+    static double k = 0.06;
+    ImGui::PushItemWidth(75);
+    ImGui::InputDouble("k##Scott_implicit", &k);
+    ImGui::PopItemWidth();
+
+    static float numSteps2 = 2000;
+    ImGui::PushItemWidth(75);
+    ImGui::InputFloat("Number of Steps##Scott_implicit", &numSteps2);
+    ImGui::PopItemWidth();
+
+    if (ImGui::Button("Gray-Scott Reaction Diffusion Implicit"))
+        computeImplicitReactionDiffusionScott(numSteps2, timeStep2, F, k);
+}
+
+void callbackGrowingShapes() {
+    static float timeStep = 1;
+    ImGui::PushItemWidth(50);
+    ImGui::InputFloat("Time Step##growing_shapes", &timeStep);
+    ImGui::PopItemWidth();
+
+    static double F = 0.025;
+    ImGui::PushItemWidth(75);
+    ImGui::InputDouble("F##growing_shapes", &F);
+    ImGui::PopItemWidth();
+
+    static double k = 0.06;
+    ImGui::PushItemWidth(75);
+    ImGui::InputDouble("k##growing_shapes", &k);
+    ImGui::PopItemWidth();
+
+    static double alpha = 0.5;
+    ImGui::PushItemWidth(75);
+    ImGui::InputDouble("k##growing_shapes", &alpha);
+    ImGui::PopItemWidth();
+
+    static double beta = 0.5;
+    ImGui::PushItemWidth(75);
+    ImGui::InputDouble("F##growing_shapes", &beta);
+    ImGui::PopItemWidth();
+
+    static float max = 50;
+    ImGui::PushItemWidth(75);
+    ImGui::InputFloat("Max##growing_shapes", &max);
+    ImGui::PopItemWidth();
+
+    static float numSteps = 0;
+    ImGui::SameLine();
+    ImGui::PushItemWidth(150);
+    if (ImGui::SliderFloat("Run Procruste", &numSteps, 0, max))
+        growingShapes(numSteps, timeStep, F, k, alpha, beta);
+    ImGui::PopItemWidth();
 }
 
 int main(int argc, char **argv) {
-  // Options
-  polyscope::options::autocenterStructures = true;
-  polyscope::view::windowWidth = 1024;
-  polyscope::view::windowHeight = 1024;
+    std::string option;
+    cout << "Which would you like to display? Enter \"heat\" for heat equations, \"explicit\" for explicit reaction diffusion equations, \"implicit\" for implicit reaction diffusion equations, and \"growing\" to perform growing shapes." << endl;
+    cin >> option;
 
-  // Initialize polyscope
-  polyscope::init();
+    // Options
+    polyscope::options::autocenterStructures = true;
+    polyscope::view::windowWidth = 1024;
+    polyscope::view::windowHeight = 1024;
 
-  std::string filename = "../spot.obj";
-  std::cout << "loading: " << filename << std::endl;
+    // Initialize polyscope
+    polyscope::init();
 
-  // Read the mesh
-  Eigen::MatrixXd origV, meshV1;
-  Eigen::MatrixXi origF, meshF1;
-  // Read the mesh
-  igl::readOBJ(filename, origV, origF);
-  Eigen::SparseMatrix<double> S, S1;
-  igl::loop(origV.rows(), origF, S1, meshF1);
-  meshV1 = S1 * origV;
-  igl::loop(meshV1.rows(), meshF1, S, meshF);
-  meshV = S * meshV1;
- 
-  //// Read the mesh
-  //Eigen::MatrixXd origV;
-  //Eigen::MatrixXi origF;
+    if (option == "growing") {
+        cout << "growing..." << endl;
+        // load original mesh
+        igl::readOBJ("../original_grid.obj", V_rest, F_rest);
 
-  //igl::readOBJ(filename, origV, origF);
+        // load target mesh
+        // igl::readOBJ("../scaled grid.obj", V_target, F_target);
+        igl::readOBJ("../z_displaced_grid.obj", V_target, F_target);
+        // igl::readOBJ("../y rotated grid.obj", V_target, F_target);
+    }
+    else {
+        // Read the mesh
+        Eigen::MatrixXd origV, meshV1;
+        Eigen::MatrixXi origF, meshF1;
+        // Read the mesh
+        igl::readOBJ("../spot.obj", origV, origF);
+        Eigen::SparseMatrix<double> S, S1;
+        igl::loop(origV.rows(), origF, S1, meshF1);
+        meshV1 = S1 * origV;
+        igl::loop(meshV1.rows(), meshF1, S, meshF);
+        meshV = S * meshV1;
 
-  //Eigen::SparseMatrix<double> S;
-  //igl::loop(origV.rows(), origF, S, meshF);
-  //meshV = S * origV;
+        polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+    }
 
-  Eigen::VectorXd noise(meshV.rows());
-  noise.setRandom();
-  noise_a = noise;
+    if (option == "heat")
+        polyscope::state::userCallback = callbackHeat;
+    if (option == "explicit")
+        polyscope::state::userCallback = callbackExplicitRd;
+    if (option == "implicit")
+        polyscope::state::userCallback = callbackImplicitRd;
+    if (option == "growing")
+        polyscope::state::userCallback = callbackGrowingShapes;
 
-  Eigen::VectorXd noise2(meshV.rows());
-  noise2.setRandom();
-  noise_b = noise2;
+    // Show the gui
+    polyscope::show();
 
-  // Register the mesh with Polyscope
-  polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
-
-  // Add the callback
-  polyscope::state::userCallback = callback;
-
-  // Show the gui
-  polyscope::show();
-
-  return 0;
+    return 0;  
 }
