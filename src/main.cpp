@@ -134,7 +134,6 @@ void computeExplicitReactionDiffusionScott(float numSteps, float timeStep) {
         }
     }
 
-    // Turing
     for (int i = 0; i < numSteps; i++) {
         Eigen::VectorXd UVV = U.array() * V.array() * V.array();
         U = (U + timeStep * (-1 * UVV + F - F * U) + du * timeStep * L * U).eval();
@@ -189,16 +188,15 @@ void computeImplicitReactionDiffusionTuring(float numSteps, float timeStep) {
     auto mesh = temp->addVertexScalarQuantity("Turing Implicit", a);
 }
 
-void computeImplicitReactionDiffusionScott(float numSteps, float timeStep) {
+void computeImplicitReactionDiffusionScott(float numSteps, float timeStep, double F_val, double k_val) {
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L);
 
     Eigen::VectorXd U = Eigen::VectorXd::Constant(L.rows(), 1, 1);
     Eigen::VectorXd V = Eigen::VectorXd::Constant(L.rows(), 1, 0);
 
-    Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, 0.0545);  // feed rate
-    Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, 0.062); // degrading rate
-
+    Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, F_val);  // feed rate
+    Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, k_val); // degrading rate
     float du = 1; // diffusion rate
     float dv = (float)0.5; // diffusion rate
 
@@ -214,7 +212,6 @@ void computeImplicitReactionDiffusionScott(float numSteps, float timeStep) {
     Eigen::SparseMatrix<double> temp1 = (I - timeStep * du * L).eval();
     Eigen::SparseMatrix<double> temp2 = (I - timeStep * dv * L).eval();
 
-    // do I need two solvers??
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1;
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver2;
 
@@ -223,8 +220,11 @@ void computeImplicitReactionDiffusionScott(float numSteps, float timeStep) {
 
     for (int i = 0; i < numSteps; i++) {
         Eigen::VectorXd UVV = U.array() * V.array() * V.array();
-        U = solver1.solve(U + timeStep * (F - F * U - UVV));
-        V = solver2.solve(V + timeStep * (UVV - (k + F) * V));
+        Eigen::VectorXd FU = F.array() * U.array();
+        U = solver1.solve((U + timeStep * (F - FU - UVV)).eval());
+        Eigen::VectorXd kV = k.array() * V.array();
+        Eigen::VectorXd FV = F.array() * V.array();
+        V = solver2.solve((V + timeStep * (UVV - kV - FV)).eval());
     }
 
     auto temp = polyscope::getSurfaceMesh("input mesh");
@@ -302,20 +302,20 @@ void callback() {
   //}
   //ImGui::PopItemWidth();
 
-  // Reaction Diffusion Gray and Scott
-  static float timeStep4 = 0.05;
-  ImGui::PushItemWidth(50);
-  ImGui::InputFloat("Time Step##Scott", &timeStep4);
-  ImGui::PopItemWidth();
+  //// Reaction Diffusion Gray and Scott
+  //static float timeStep4 = 0.05;
+  //ImGui::PushItemWidth(50);
+  //ImGui::InputFloat("Time Step##Scott", &timeStep4);
+  //ImGui::PopItemWidth();
 
-  static float numSteps4 = 200;
-  ImGui::SameLine();
-  ImGui::PushItemWidth(75);
-  ImGui::InputFloat("Max##Scott", &numSteps4);
-  ImGui::PopItemWidth();
+  //static float numSteps4 = 200;
+  //ImGui::SameLine();
+  //ImGui::PushItemWidth(75);
+  //ImGui::InputFloat("Max##Scott", &numSteps4);
+  //ImGui::PopItemWidth();
 
-  if (ImGui::Button("Gray & Scott Reaction Diffusion Explicit"))
-      computeExplicitReactionDiffusionScott(numSteps4, timeStep4);
+  //if (ImGui::Button("Gray & Scott Reaction Diffusion Explicit"))
+  //    computeExplicitReactionDiffusionScott(numSteps4, timeStep4);
 
   // Implicit Reaction Diffusion Turing
   //static float timeStep5 = 0.05;
@@ -338,14 +338,23 @@ void callback() {
   ImGui::InputFloat("Time Step##Scott_implicit", &timeStep6);
   ImGui::PopItemWidth();
 
-  static float numSteps6 = 200;
-  ImGui::SameLine();
+  static double F = 0.025;
   ImGui::PushItemWidth(75);
-  ImGui::InputFloat("Max##Scott_implicit", &numSteps6);
+  ImGui::InputDouble("F##Scott_implicit", &F);
+  ImGui::PopItemWidth();
+
+  static double k = 0.06;
+  ImGui::PushItemWidth(75);
+  ImGui::InputDouble("k##Scott_implicit", &k);
+  ImGui::PopItemWidth();
+
+  static float numSteps6 = 200;
+  ImGui::PushItemWidth(75);
+  ImGui::InputFloat("Number of Steps##Scott_implicit", &numSteps6);
   ImGui::PopItemWidth();
 
   if (ImGui::Button("Gray-Scott Reaction Diffusion Implicit"))
-      computeImplicitReactionDiffusionScott(numSteps6, 1);
+      computeImplicitReactionDiffusionScott(numSteps6, timeStep6, F, k);
 }
 
 int main(int argc, char **argv) {
@@ -378,7 +387,6 @@ int main(int argc, char **argv) {
   //igl::readOBJ(filename, origV, origF);
 
   //Eigen::SparseMatrix<double> S;
-  //igl::loop(origV.rows(), origF, S, meshF);
   //igl::loop(origV.rows(), origF, S, meshF);
   //meshV = S * origV;
 
