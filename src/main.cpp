@@ -14,38 +14,23 @@ Eigen::MatrixXi meshF;
 
 struct RDParams
 {
-    Eigen::VectorXd s;
-    Eigen::VectorXd alpha;
-    Eigen::VectorXd beta;
-    double da;
-    double db;
-    double dt;
+    double Du, Dv;
+    double F;
+    double k;
 
+    double dt;
+    
     Eigen::SparseMatrix<double> M;
-    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double> > Asolver;
-    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double> > Bsolver;
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double> > Usolver;
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double> > Vsolver;
 };
 
-void makePerturbedAlphaBeta(double alpha, double beta, double s, double da, double db, double perturbPercent, double dt, RDParams &params)
+void initializeParams(double Du, double Dv, double F, double k, double dt, RDParams &params)
 {
-    int n = meshV.rows();
-    params.alpha.resize(n);
-    params.alpha.setConstant(alpha);
-    Eigen::VectorXd alphanoise(n);
-    alphanoise.setRandom();
-    params.alpha += alpha * perturbPercent * 0.01 * alphanoise;
-
-    params.beta.resize(n);
-    params.beta.setConstant(beta);
-    Eigen::VectorXd betanoise(n);
-    betanoise.setRandom();
-    params.beta += beta * perturbPercent * 0.01 * betanoise;
-
-    params.s.resize(n);
-    params.s.setConstant(s);
-
-    params.da = da;
-    params.db = db;    
+    params.Du = Du;
+    params.Dv = Dv;
+    params.F = F;
+    params.k = k;
 
     params.dt = dt;
     
@@ -53,14 +38,14 @@ void makePerturbedAlphaBeta(double alpha, double beta, double s, double da, doub
     Eigen::SparseMatrix<double> L;
     igl::cotmatrix(meshV, meshF, L);
 
-    Eigen::SparseMatrix<double> Amat = params.M - params.dt * params.da * L;
-    Eigen::SparseMatrix<double> Bmat = params.M - params.dt * params.db * L;
+    Eigen::SparseMatrix<double> Amat = params.M - params.dt * params.Du * L;
+    Eigen::SparseMatrix<double> Bmat = params.M - params.dt * params.Dv * L;
 
-    params.Asolver.compute(Amat);
-    params.Bsolver.compute(Bmat);
+    params.Usolver.compute(Amat);
+    params.Vsolver.compute(Bmat);
 }
 
-void simulateOneStep(const Eigen::VectorXd& a, const Eigen::VectorXd& b, Eigen::VectorXd& newa, Eigen::VectorXd& newb, RDParams& params)
+void simulateOneStep(const Eigen::VectorXd& U, const Eigen::VectorXd& V, Eigen::VectorXd& newU, Eigen::VectorXd& newV, RDParams& params)
 {
     int nverts = meshV.rows();
 
@@ -68,16 +53,39 @@ void simulateOneStep(const Eigen::VectorXd& a, const Eigen::VectorXd& b, Eigen::
     Eigen::VectorXd G(nverts);
     for (int i = 0; i < nverts; i++)
     {
-        F[i] = params.s[i] * (a[i] * b[i] - a[i] - params.alpha[i]);
-        G[i] = params.s[i] * (params.beta[i] - a[i] * b[i]);
+        F[i] = -U[i] * V[i] * V[i] + params.F * (1 - U[i]);
+        G[i] = U[i] * V[i] * V[i] - (params.F + params.k) * V[i];
     }
 
-    Eigen::VectorXd arhs = params.M * (a + params.dt * F);
-    Eigen::VectorXd brhs = params.M * (b + params.dt * G);
+    Eigen::VectorXd Urhs = params.M * (U + params.dt * F);
+    Eigen::VectorXd Vrhs = params.M * (V + params.dt * G);
 
-    newa = params.Asolver.solve(arhs);
-    newb = params.Bsolver.solve(brhs);
+    newU = params.Usolver.solve(Urhs);
+    newV = params.Vsolver.solve(Vrhs);
 
+}
+
+void setDistanceBased(Eigen::Vector3d point, double dist, Eigen::VectorXd& f, double val)
+{
+    int nverts = meshV.rows();
+    for (int i = 0; i < nverts; i++)
+    {
+        double d = (point - meshV.row(i).transpose()).norm();
+        if (d <= dist)
+            f[i] = val;
+    }
+}
+
+void initializeUV(Eigen::VectorXd& U, Eigen::VectorXd& V)
+{
+    int nverts = meshV.rows();
+    U.resize(nverts);
+    V.resize(nverts);
+    U.setConstant(1.0);
+    V.setConstant(0.0);
+    Eigen::Vector3d pt = meshV.row(0).transpose();
+    setDistanceBased(pt, 0.1, U, 0.5);
+    setDistanceBased(pt, 0.1, V, 0.25);
 }
 
 int main(int argc, char** argv) {
@@ -98,34 +106,32 @@ int main(int argc, char** argv) {
     // Read the mesh
     igl::readOBJ(filename, origV, origF);
 
-    Eigen::SparseMatrix<double> S;
-    igl::loop(origV.rows(), origF, S, meshF);
-    meshV = S * origV;
+    igl::loop(origV, origF, meshV, meshF, 2);
+    
+    double Du = 2e-5;
+    double Dv = 1e-5;
 
-    double alpha = 12.0;
-    double beta = 16.0;
+    double F = 0.04;
+    double k = 0.06;
 
-    double s = 1.0 / 128.0;
-    double da = 1e-4;
-    double db = 1e-3;
-    double percentNoise = 0.1;
-    double dt = 0.1;
+    double dt = 1.0;
+
+    bool animating = true;
 
     // Register the mesh with Polyscope
     auto* mesh = polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
 
     RDParams params;
     int nverts = meshV.rows();
-    makePerturbedAlphaBeta(alpha, beta, s, da, db, percentNoise, dt, params);
+    initializeParams(Du, Dv, F, k, dt, params);
 
-    Eigen::VectorXd a(nverts);
-    Eigen::VectorXd b(nverts);
-    a.setConstant(4.0);
-    b.setConstant(4.0);
+    Eigen::VectorXd U(nverts);
+    Eigen::VectorXd V(nverts);
+    initializeUV(U, V);
 
-    auto *acolor = mesh->addVertexScalarQuantity("a", a);
-    acolor->setEnabled(true);
-    mesh->addVertexScalarQuantity("b", b);
+    auto *Ucolor = mesh->addVertexScalarQuantity("U", U);
+    Ucolor->setEnabled(true);
+    mesh->addVertexScalarQuantity("V", V);
 
     int stepsPerFrame = 1;
 
@@ -136,48 +142,56 @@ int main(int argc, char** argv) {
         if (ImGui::Button("Reset Animation"))
             reset = true;
 
-        ImGui::InputInt("Steps per frame", &stepsPerFrame);
+        if (animating)
+        {
+            if (ImGui::Button("Pause Animation"))
+                animating = false;
+        }
+        else
+        {
+            if (ImGui::Button("Resume Animation"))
+                animating = true;
+        }
 
-        ImGui::Separator();
+
+        ImGui::InputInt("Steps per frame", &stepsPerFrame);
 
         if (ImGui::InputDouble("dt", &dt))
             reset = true;
 
-        if (ImGui::InputDouble("s", &s))
+        ImGui::Separator();
+
+        if (ImGui::InputDouble("F", &F))
             reset = true;
 
-        if (ImGui::InputDouble("da", &da))
+        if (ImGui::InputDouble("k", &k))
             reset = true;
         
-        if (ImGui::InputDouble("db", &db))
+        if (ImGui::InputDouble("Du", &Du))
             reset = true;
 
-        if (ImGui::InputDouble("alpha", &alpha))
-            reset = true;
-        
-        if (ImGui::InputDouble("beta", &beta))
-            reset = true;
-
-        if (ImGui::InputDouble("% noise", &percentNoise))
+        if (ImGui::InputDouble("Dv", &Dv))
             reset = true;
 
         if (reset)
         {
-            makePerturbedAlphaBeta(alpha, beta, s, da, db, percentNoise, dt, params);
-            a.setConstant(4.0);
-            b.setConstant(4.0);
+            initializeParams(Du, Dv, F, k, dt, params);            
+            initializeUV(U, V);
         }
 
-        for (int i = 0; i < stepsPerFrame; i++)
+        if (animating)
         {
-            Eigen::VectorXd newa, newb;
-            simulateOneStep(a, b, newa, newb, params);
-            a = newa;
-            b = newb;
+            for (int i = 0; i < stepsPerFrame; i++)
+            {
+                Eigen::VectorXd newU, newV;
+                simulateOneStep(U, V, newU, newV, params);
+                U = newU;
+                V = newV;
+            }
+
+            mesh->addVertexScalarQuantity("U", U);
+            mesh->addVertexScalarQuantity("V", V);
         }
-        mesh->addVertexScalarQuantity("a", a);
-        mesh->addVertexScalarQuantity("b", b);
-        
     };
 
     // Show the gui
