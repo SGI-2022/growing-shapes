@@ -23,6 +23,7 @@
 
 #include <iostream>
 #include <unordered_set>
+#include <set>
 #include <utility>
 using namespace std;
 
@@ -269,16 +270,16 @@ void procruste(Eigen::MatrixXd &V_procruste) {
         Eigen::VectorXi v_indices = meshF.row(i); //vertex indices in this triangle
 
         Eigen::MatrixXd meshV_triangle, V_target_triangle;
-        igl::slice(meshV, v_indices, 1, meshV_triangle); //slice: Y = X(I,:)
-        igl::slice(V_target, v_indices, 1, V_target_triangle); //slice: Y = X(I,:)
+        igl::slice(meshV, v_indices, 3, meshV_triangle); //slice: Y = X(I,:)
+        igl::slice(V_target, v_indices, 3, V_target_triangle); //slice: Y = X(I,:)
 
         double scale;
         Eigen::MatrixXd R;
         Eigen::VectorXd t;
-        igl::procrustes(meshV_triangle, V_target_triangle, true, false, scale, R, t);
+        igl::procrustes(meshV_triangle, V_target_triangle, true, true, scale, R, t);
         R *= scale;
         Eigen::MatrixXd V_procruste_triangle = (meshV_triangle * R).rowwise() + t.transpose();
-        igl::slice_into(V_procruste_triangle, v_indices, 1, V_procruste); //slice into: Y(I,:) = X
+        igl::slice_into(V_procruste_triangle, v_indices, 3, V_procruste); //slice into: Y(I,:) = X
     }
 }
 
@@ -296,22 +297,39 @@ void procrusteIteration(float numSteps) {
     ////temp2->SurfaceMesh::addFaceScalarQuantity("target_", F_target);
 }
 
-void loopOverDiamonds(float beta) {
+bool isSharedEdge(int first, int second) {
+    short counter;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            int vertex1 = meshF.row(first)(i);
+            int vertex2 = meshF.row(second)(j);
+            if (meshV(vertex1) == meshV(vertex2))
+                counter++;
+        }
+    }
+    if (counter > 1)
+        return true;
+    return false;
+}
+
+void loopOverRhombuses(float beta) {
     // find adjacent faces
     std::vector<std::vector<int>> adjFaces;
     vector<vector<int>> notUsing;
     igl::vertex_triangle_adjacency(meshV.rows(), meshF, adjFaces, notUsing);
 
     unordered_set<int> faces;
-    int firstTriangle = INT_MAX;
-    int secondTriangle = INT_MAX;
+    int firstTriangle;
+    int secondTriangle;
 
-    set<Eigen::VectorXd> verts;
+    set<vector<float>> verts;
 
-    // Go through each face
+    // Go through each face k
     for (int k = 0; k < adjFaces.size(); k++) {
+        firstTriangle = INT_MAX;
+        secondTriangle = INT_MAX;
 
-        // Go through each adjacent face
+        // Go through each adjacent face l of face k
         for (int l = 0; l < adjFaces[k].size(); l++) {
             verts.clear();
 
@@ -319,7 +337,7 @@ void loopOverDiamonds(float beta) {
             if (faces.find(adjFaces[k][l]) == faces.end()) {
                 if (firstTriangle == INT_MAX)
                     firstTriangle = adjFaces[k][l];
-                else if (secondTriangle == INT_MAX)
+                else if (secondTriangle == INT_MAX && isSharedEdge(firstTriangle, adjFaces[k][l]))
                     secondTriangle = adjFaces[k][l];
                 else {
 
@@ -328,7 +346,11 @@ void loopOverDiamonds(float beta) {
                         int vertexNum = meshF.row(firstTriangle)(kk);
                         int newVertexNum = F_target.row(firstTriangle)(kk);
                         // add vertex to done set
-                        verts.insert(meshV.row(vertexNum));
+                        std::vector<float> row;
+                        row.push_back(meshV.row(vertexNum)(0));
+                        row.push_back(meshV.row(vertexNum)(1));
+                        row.push_back(meshV.row(vertexNum)(2));
+                        verts.insert(row);
 
                         // go through each x,y,z coordinate of the vertex
                         for (int m = 0; m < 3; m++) {
@@ -342,10 +364,15 @@ void loopOverDiamonds(float beta) {
                         int vertexNum = meshF.row(secondTriangle)(kk);
                         int newVertexNum = F_target.row(secondTriangle)(kk);
 
+                        std::vector<float> row;
+                        row.push_back(meshV.row(vertexNum)(0));
+                        row.push_back(meshV.row(vertexNum)(1));
+                        row.push_back(meshV.row(vertexNum)(2));
                         // if the vertex is not the one shared vertex
-                        if (verts.find(meshV.row(vertexNum)) == verts.end())
+                        if (verts.find(row) == verts.end()) {
                             // add vertex to done set
-                            verts.insert(meshV.row(vertexNum));
+                            verts.insert(row);
+                        }
 
                         // go through each x,y,z coordinate of the vertex
                         for (int m = 0; m < 3; m++) {
@@ -363,13 +390,14 @@ void loopOverDiamonds(float beta) {
     }
 }
 
-Eigen::VectorXd growingShapes(float numSteps, float timeStep, double F_val, double k_val, float alpha, float beta) {
+void growingShapes(float numSteps, float timeStep, double F_val, double k_val, float alpha, float beta) {
     // simulate reaction-diffusion
     Eigen::VectorXd U = computeImplicitReactionDiffusionScott(numSteps, timeStep, F_val, k_val);
+    meshV *= U;
 
     for (int i = 0; i < numSteps; i++) {
-        // update T based on morphegens
-        procrusteIteration(numSteps);
+        // update T based on morphogens
+        procruste(meshV);
 
         // loop over triangles
         for (int j = 0; j < meshF.rows(); j++) {
@@ -382,12 +410,9 @@ Eigen::VectorXd growingShapes(float numSteps, float timeStep, double F_val, doub
             }
         }
 
-        loopOverDiamonds(beta);
+        loopOverRhombuses(beta);
     }
 
-    /*auto temp = polyscope::getSurfaceMesh("input mesh");
-    auto mesh = temp->addVertexScalarQuantity("growing", meshV);*/
-    return U;
 }
 
 void callbackHeat() {
@@ -565,11 +590,8 @@ void callbackGrowingShapes() {
     static float numSteps = 0;
     ImGui::SameLine();
     ImGui::PushItemWidth(150);
-    if (ImGui::SliderFloat("Run Procruste", &numSteps, 0, max)) {
-        Eigen::VectorXd U = growingShapes(numSteps, timeStep, F, k, alpha, beta);
-        auto temp = polyscope::getSurfaceMesh("input mesh");
-        auto mesh = temp->addVertexScalarQuantity("Scott Implicit", U);
-    }
+    if (ImGui::SliderFloat("Run Procruste", &numSteps, 0, max))
+        growingShapes(numSteps, timeStep, F, k, alpha, beta);
     ImGui::PopItemWidth();
 }
 
@@ -588,11 +610,10 @@ int main(int argc, char **argv) {
 
     if (option == "growing") {
         // load original mesh
-        //igl::readOBJ("../original_grid.obj", meshV, meshF);
-        igl::readOBJ("../spot.obj", meshV, meshF);
+        igl::readOBJ("../original_grid.obj", meshV, meshF);
         // load target mesh
         // igl::readOBJ("../scaled grid.obj", V_target, F_target);
-        //igl::readOBJ("../z_displaced_grid.obj", V_target, F_target);
+        igl::readOBJ("../z_displaced_grid.obj", V_target, F_target);
         // igl::readOBJ("../y rotated grid.obj", V_target, F_target);
         polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
         //polyscope::registerSurfaceMesh("target mesh", V_target, F_target);
