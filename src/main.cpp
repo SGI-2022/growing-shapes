@@ -214,6 +214,29 @@ Eigen::VectorXd computeImplicitReactionDiffusionScott(float numSteps, float time
     return U;
 }
 
+Eigen::VectorXd oneIterImplicitReactionDiffusionScott(float timeStep, double F_val, double k_val, Eigen::VectorXd &U, Eigen::VectorXd &V, Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> &solver1, Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> &solver2) {
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
+
+    Eigen::VectorXd F = Eigen::VectorXd::Constant(L.rows(), 1, F_val);  // feed rate
+    Eigen::VectorXd k = Eigen::VectorXd::Constant(L.rows(), 1, k_val); // degrading rate
+
+    for (int i = 0; i < meshV.rows(); i++) {
+        if (((meshV(i, 0) - meshV(100, 0)) * (meshV(i, 0) - meshV(100, 0)) + (meshV(i, 1) - meshV(100, 1)) * (meshV(i, 1) - meshV(100, 1)) + (meshV(i, 2) - meshV(100, 2)) * (meshV(i, 2) - meshV(100, 2))) < 0.01) {
+            V(i) = 1.0;
+        }
+    }
+
+    Eigen::VectorXd UVV = U.array() * V.array() * V.array();
+    Eigen::VectorXd FU = F.array() * U.array();
+    U = solver1.solve((U + timeStep * (F - FU - UVV)).eval());
+    Eigen::VectorXd kV = k.array() * V.array();
+    Eigen::VectorXd FV = F.array() * V.array();
+    V = solver2.solve((V + timeStep * (UVV - kV - FV)).eval());
+
+    return U;
+}
+
 void create2DGridManual(int n, int m, Eigen::MatrixXd& V, Eigen::MatrixXi& F, float scale_1, float scale_2, bool displace, bool rotate) {
     using namespace Eigen;
     V.resize((n + 1) * (m + 1), 3);
@@ -270,8 +293,8 @@ void procruste(Eigen::MatrixXd &V_procruste) {
         Eigen::VectorXi v_indices = meshF.row(i); //vertex indices in this triangle
 
         Eigen::MatrixXd meshV_triangle, V_target_triangle;
-        igl::slice(meshV, v_indices, 3, meshV_triangle); //slice: Y = X(I,:)
-        igl::slice(V_target, v_indices, 3, V_target_triangle); //slice: Y = X(I,:)
+        igl::slice(meshV, v_indices, 1, meshV_triangle); //slice: Y = X(I,:)
+        igl::slice(V_target, v_indices, 1, V_target_triangle); //slice: Y = X(I,:)
 
         double scale;
         Eigen::MatrixXd R;
@@ -279,26 +302,26 @@ void procruste(Eigen::MatrixXd &V_procruste) {
         igl::procrustes(meshV_triangle, V_target_triangle, true, true, scale, R, t);
         R *= scale;
         Eigen::MatrixXd V_procruste_triangle = (meshV_triangle * R).rowwise() + t.transpose();
-        igl::slice_into(V_procruste_triangle, v_indices, 3, V_procruste); //slice into: Y(I,:) = X
+        igl::slice_into(V_procruste_triangle, v_indices, 1, V_procruste); //slice into: Y(I,:) = X
     }
 }
 
-void procrusteIteration(float numSteps) {
-    for (int i = 0; i < numSteps; i++) {
-        procruste(meshV); //update meshV mesh
-    }
-
-    //auto temp = polyscope::getSurfaceMesh("rest mesh");
-    //temp->addVertexScalarQuantity("rest", meshV);
-    ////temp->addFaceScalarQuantity("rest_", meshF);
-
-    //auto temp2 = polyscope::getSurfaceMesh("target mesh");
-    //temp2->addVertexScalarQuantity("target", V_target);
-    ////temp2->SurfaceMesh::addFaceScalarQuantity("target_", F_target);
+void procrusteOneTriangle(Eigen::MatrixXd& mesh, int row) {
+    double scale;
+    Eigen::VectorXi v_indices = meshF.row(row);
+    Eigen::MatrixXd R;
+    Eigen::VectorXd t;
+    Eigen::MatrixXd meshV_triangle, V_target_triangle;
+    igl::slice(mesh, v_indices, 1, meshV_triangle);
+    igl::slice(V_target, v_indices, 1, V_target_triangle);
+    igl::procrustes(meshV_triangle, V_target_triangle, true, true, scale, R, t);
+    R *= scale;
+    Eigen::MatrixXd V_procruste_triangle = (meshV_triangle * R).rowwise() + t.transpose();
+    igl::slice_into(V_procruste_triangle, v_indices, 1, mesh);
 }
 
 bool isSharedEdge(int first, int second) {
-    short counter;
+    short counter = 0;
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
             int vertex1 = meshF.row(first)(i);
@@ -312,7 +335,7 @@ bool isSharedEdge(int first, int second) {
     return false;
 }
 
-void loopOverRhombuses(float beta) {
+void loopOverRhombuses(float beta, Eigen::MatrixXd &newPos) {
     // find adjacent faces
     std::vector<std::vector<int>> adjFaces;
     vector<vector<int>> notUsing;
@@ -337,9 +360,8 @@ void loopOverRhombuses(float beta) {
             if (faces.find(adjFaces[k][l]) == faces.end()) {
                 if (firstTriangle == INT_MAX)
                     firstTriangle = adjFaces[k][l];
-                else if (secondTriangle == INT_MAX && isSharedEdge(firstTriangle, adjFaces[k][l]))
+                else if (secondTriangle == INT_MAX && isSharedEdge(firstTriangle, adjFaces[k][l])) {
                     secondTriangle = adjFaces[k][l];
-                else {
 
                     // go through each vertex of first triangle
                     for (int kk = 0; kk < 3; kk++) {
@@ -355,7 +377,7 @@ void loopOverRhombuses(float beta) {
                         // go through each x,y,z coordinate of the vertex
                         for (int m = 0; m < 3; m++) {
                             // V = V + beta * (V~ - V) for first triangle
-                            meshV.row(vertexNum)(m) += beta * (V_target.row(newVertexNum)(m) - meshV.row(vertexNum)(m));
+                            newPos.row(vertexNum)(m) += beta * (V_target.row(newVertexNum)(m) - newPos.row(vertexNum)(m));
                         }
                     }
 
@@ -368,16 +390,16 @@ void loopOverRhombuses(float beta) {
                         row.push_back(meshV.row(vertexNum)(0));
                         row.push_back(meshV.row(vertexNum)(1));
                         row.push_back(meshV.row(vertexNum)(2));
+
                         // if the vertex is not the one shared vertex
                         if (verts.find(row) == verts.end()) {
+                            // go through each x,y,z coordinate of the vertex
+                            for (int m = 0; m < 3; m++) {
+                                // V = V + beta * (V~ - V) for second triangle
+                                newPos.row(vertexNum)(m) += beta * (V_target.row(newVertexNum)(m) - newPos.row(vertexNum)(m));
+                            }
                             // add vertex to done set
                             verts.insert(row);
-                        }
-
-                        // go through each x,y,z coordinate of the vertex
-                        for (int m = 0; m < 3; m++) {
-                            // V = V + beta * (V~ - V) for second triangle
-                            meshV.row(vertexNum)(m) += beta * (V_target.row(newVertexNum)(m) - meshV.row(vertexNum)(m));
                         }
                     }
                     break;
@@ -391,28 +413,56 @@ void loopOverRhombuses(float beta) {
 }
 
 void growingShapes(float numSteps, float timeStep, double F_val, double k_val, float alpha, float beta) {
-    // simulate reaction-diffusion
-    Eigen::VectorXd U = computeImplicitReactionDiffusionScott(numSteps, timeStep, F_val, k_val);
-    meshV *= U;
+    Eigen::MatrixXd newPos = meshV;
+
+    Eigen::VectorXd U = Eigen::VectorXd::Constant(meshV.rows(), 1, 1);
+    Eigen::VectorXd V = Eigen::VectorXd::Constant(meshV.rows(), 1, 0);
+    Eigen::SparseMatrix<double> I(meshV.rows(), meshV.rows());
+    I.setIdentity();
+    Eigen::SparseMatrix<double> L;
+    igl::cotmatrix(meshV, meshF, L);
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver1, solver2;
+    Eigen::SparseMatrix<double> temp1 = (I - timeStep * 1 * L).eval();
+    Eigen::SparseMatrix<double> temp2 = (I - timeStep * 0.5 * L).eval();
+    solver1.compute(temp1);
+    solver2.compute(temp2);
 
     for (int i = 0; i < numSteps; i++) {
-        // update T based on morphogens
-        procruste(meshV);
+        // simulate reaction-diffusion
+        oneIterImplicitReactionDiffusionScott(timeStep, F_val, k_val, U, V, solver1, solver2);
 
         // loop over triangles
+        set<vector<float>> verts;
         for (int j = 0; j < meshF.rows(); j++) {
+            procrusteOneTriangle(newPos, j);
+
+            // loop over each vertex of the triangle
             for (int jj = 0; i < 3; i++) {
                 int vertexNum = meshF.row(j)(jj);
                 int newVertexNum = F_target.row(j)(jj);
 
-                // V = V + alpha * (V~ - V)
-                meshV.row(vertexNum) += alpha * (V_target.row(newVertexNum) - meshV.row(vertexNum));
+                std::vector<float> row;
+                row.push_back(meshV.row(vertexNum)(0));
+                row.push_back(meshV.row(vertexNum)(1));
+                row.push_back(meshV.row(vertexNum)(2));
+                if (verts.find(row) == verts.end()) {
+                    // go through each x,y,z coordinate of the vertex
+                    for (int k = 0; k < 3; k++) {
+                        // V = V + alpha * (V~ - V) 
+                        newPos.row(vertexNum)(k) += alpha * (V_target.row(newVertexNum)(k) - newPos.row(vertexNum)(k));
+                    }
+                    // add vertex to done set
+                    verts.insert(row);
+                }
             }
         }
 
-        loopOverRhombuses(beta);
+        loopOverRhombuses(beta, newPos);
     }
-
+    auto temp = polyscope::getSurfaceMesh("input mesh");
+    temp->addVertexScalarQuantity("reaction diffusion", U);
+    temp->updateVertexPositions(newPos);
+    
 }
 
 void callbackHeat() {
@@ -574,25 +624,21 @@ void callbackGrowingShapes() {
 
     static double alpha = 0.5;
     ImGui::PushItemWidth(75);
-    ImGui::InputDouble("k##growing_shapes", &alpha);
+    ImGui::InputDouble("alpha##growing_shapes", &alpha);
     ImGui::PopItemWidth();
 
     static double beta = 0.5;
     ImGui::PushItemWidth(75);
-    ImGui::InputDouble("F##growing_shapes", &beta);
+    ImGui::InputDouble("beta##growing_shapes", &beta);
     ImGui::PopItemWidth();
 
-    static float max = 50;
+    static float numSteps = 50;
     ImGui::PushItemWidth(75);
-    ImGui::InputFloat("Max##growing_shapes", &max);
+    ImGui::InputFloat("Number of Steps##growing_shapes", &numSteps);
     ImGui::PopItemWidth();
 
-    static float numSteps = 0;
-    ImGui::SameLine();
-    ImGui::PushItemWidth(150);
-    if (ImGui::SliderFloat("Run Procruste", &numSteps, 0, max))
+    if (ImGui::Button("Growing Shapes"))
         growingShapes(numSteps, timeStep, F, k, alpha, beta);
-    ImGui::PopItemWidth();
 }
 
 int main(int argc, char **argv) {
@@ -609,14 +655,15 @@ int main(int argc, char **argv) {
     polyscope::init();
 
     if (option == "growing") {
-        // load original mesh
-        igl::readOBJ("../original_grid.obj", meshV, meshF);
-        // load target mesh
-        // igl::readOBJ("../scaled grid.obj", V_target, F_target);
-        igl::readOBJ("../z_displaced_grid.obj", V_target, F_target);
-        // igl::readOBJ("../y rotated grid.obj", V_target, F_target);
+        igl::readOBJ("../larger_spot.obj", V_target, F_target);
+        igl::readOBJ("../weird_spot.obj", meshV, meshF);
+
+        //igl::readOBJ("../scaled_grid.obj", V_target, F_target);
+        //igl::readOBJ("../z_displaced_grid.obj", meshV, meshF);
+        //igl::readOBJ("../y_rotated_grid.obj", V_target, F_target);
+        
         polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
-        //polyscope::registerSurfaceMesh("target mesh", V_target, F_target);
+        polyscope::registerSurfaceMesh("target mesh", V_target, F_target);
     }
     else {
         // Read the mesh
